@@ -1,0 +1,6 @@
+services:
+  - type: worker
+    name: crypto-volume-bot
+    env: python
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "python bot_volume.py"
