@@ -12,6 +12,14 @@ import ccxt
 # =========================
 EXCHANGES = os.getenv("EXCHANGES", "binance,bybit,okx").split(",")
 QUOTE_FILTER = os.getenv("QUOTE_FILTER", "USDT")     # "" = todos
+
+# Filtro por volume 24h (para apanhar small/micro caps e cortar majors)
+QV24H_MIN_USD = float(os.getenv("QV24H_MIN_USD", "0"))          # ex.: 5_000_000
+QV24H_MAX_USD = float(os.getenv("QV24H_MAX_USD", "1e18"))       # ex.: 200_000_000
+SYMBOLS_BLACKLIST = set(
+    s.strip() for s in os.getenv("SYMBOLS_BLACKLIST", "").split(",") if s.strip()
+)
+
 TOP_N_BY_VOLUME = int(os.getenv("TOP_N_BY_VOLUME", "30"))
 
 TIMEFRAME = os.getenv("TIMEFRAME", "4h")             # ex.: 1m,5m,15m,1h,4h,1d
@@ -73,27 +81,49 @@ def build_exchange(name: str):
     ex.load_markets()
     return ex
 
+# ========= Filtro por INTERVALO de volume 24h (small/micro caps) =========
 def pick_symbols_by_24h_volume(ex, top_n=30, quote=QUOTE_FILTER):
-    """Escolhe os pares com maior quoteVolume 24h (quando disponível)."""
+    """
+    Escolhe pares pela janela de volume 24h, com filtros:
+    - quote (ex.: .../USDT)
+    - intervalo de volume 24h [QV24H_MIN_USD, QV24H_MAX_USD]
+    - blacklist de majors
+    - limita a top_n após o filtro
+    """
     markets = ex.load_markets()
     try:
         tickers = ex.fetch_tickers()
     except Exception:
+        # fallback: usa mercados activos e aplica só quote e blacklist
         symbols = [s for s, m in markets.items() if m.get("active")]
         if quote:
-            symbols = [s for s in symbols if s.endswith("/"+quote)]
+            symbols = [s for s in symbols if s.endswith("/" + quote)]
+        symbols = [s for s in symbols if s not in SYMBOLS_BLACKLIST]
         return symbols[:top_n]
 
     rows = []
     for sym, t in tickers.items():
-        if quote and not sym.endswith("/"+quote):
+        if quote and not sym.endswith("/" + quote):
             continue
+        if sym in SYMBOLS_BLACKLIST:
+            continue
+
+        # quoteVolume pode vir em t['quoteVolume'] ou t['info']['quoteVolume']
         vol_q = t.get("quoteVolume") or (t.get("info") or {}).get("quoteVolume")
-        if vol_q is not None:
-            try:
-                rows.append((sym, float(vol_q)))
-            except Exception:
-                continue
+        try:
+            vol_q = float(vol_q) if vol_q is not None else None
+        except Exception:
+            vol_q = None
+        if vol_q is None:
+            continue
+
+        # filtro por intervalo (evita majors e micros ilíquidas)
+        if vol_q < QV24H_MIN_USD or vol_q > QV24H_MAX_USD:
+            continue
+
+        rows.append((sym, vol_q))
+
+    # ordenar por volume (dentro do intervalo) e cortar a top_n
     rows.sort(key=lambda x: x[1], reverse=True)
     return [sym for sym, _ in rows[:top_n]]
 
