@@ -1,4 +1,4 @@
-# bot_volume_binance_optimized.py
+# bot_volume_binance_clean.py
 import os
 import time
 import math
@@ -23,7 +23,7 @@ SYMBOLS_BLACKLIST = set([
     "BTC/USDT", "ETH/USDT", "BNB/USDT", "ADA/USDT", "SOL/USDT", 
     "DOT/USDT", "AVAX/USDT", "MATIC/USDT", "LINK/USDT", "UNI/USDT",
     "LTC/USDT", "BCH/USDT", "XRP/USDT", "DOGE/USDT", "ATOM/USDT"
-] + os.getenv("SYMBOLS_BLACKLIST", "").split(","))
+] + [s.strip() for s in os.getenv("SYMBOLS_BLACKLIST", "").split(",") if s.strip()])
 
 TOP_N_BY_VOLUME = int(os.getenv("TOP_N_BY_VOLUME", "50"))         # Mais pares
 
@@ -33,7 +33,6 @@ LOOKBACK = int(os.getenv("LOOKBACK", "10"))                       # Menos lookba
 THRESHOLD = float(os.getenv("THRESHOLD", "3.0"))                  # 3x em vez de 10x
 
 # Multi-timeframe analysis
-TIMEFRAMES = ["1m", "5m"]                                         # Verificar ambos
 RSI_PERIOD = int(os.getenv("RSI_PERIOD", "14"))                   # Para dump warnings
 
 # Stop hunting MAIS SENSÍVEL
@@ -60,7 +59,8 @@ TG_CHAT_ID = os.getenv("TG_CHAT_ID", "")
 def send_telegram(msg: str):
     """Envia texto para o Telegram (HTML permitido)."""
     if not TG_TOKEN or not TG_CHAT_ID:
-        print("[Telegram] Não configurado. Mensagem seria:\n", msg)
+        print("[Telegram] Não configurado. Mensagem seria:")
+        print(msg)
         return
     try:
         requests.post(
@@ -69,7 +69,7 @@ def send_telegram(msg: str):
             timeout=20
         )
     except Exception as e:
-        print("[Telegram] Falha ao enviar:", e)
+        print(f"[Telegram] Falha ao enviar: {e}")
 
 def ts_iso(ts_ms: int) -> str:
     return datetime.fromtimestamp(ts_ms/1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
@@ -94,16 +94,34 @@ def build_exchange(name: str):
     ex.load_markets()
     return ex
 
-def calculate_rsi(prices, period=14):
-    """Calcula RSI simples"""
+def safe_rsi_format(rsi_value):
+    """Formatação segura do RSI"""
+    if rsi_value is None:
+        return "N/A"
     try:
-        if len(prices) < period + 1:
+        return f"{float(rsi_value):.1f}"
+    except:
+        return "N/A"
+
+def calculate_rsi(prices, period=14):
+    """Calcula RSI simples - versão mais segura"""
+    try:
+        if not prices or len(prices) < period + 1:
             return None
         
-        # Converte para numpy array para evitar problemas
-        prices = np.array([float(p) for p in prices[-period-1:]])
+        # Garantir que são números
+        clean_prices = []
+        for p in prices[-(period+1):]:
+            try:
+                clean_prices.append(float(p))
+            except:
+                continue
         
-        deltas = np.diff(prices)
+        if len(clean_prices) < period + 1:
+            return None
+        
+        prices_array = np.array(clean_prices)
+        deltas = np.diff(prices_array)
         gains = np.where(deltas > 0, deltas, 0)
         losses = np.where(deltas < 0, -deltas, 0)
         
@@ -114,11 +132,12 @@ def calculate_rsi(prices, period=14):
             return 100.0
         
         rs = avg_gain / avg_loss
-        rsi = 100 - (100 / (1 + rs))
+        rsi = 100.0 - (100.0 / (1.0 + rs))
         return float(rsi)
+        
     except Exception as e:
         if DEBUG_MODE:
-            print(f"[DEBUG] Erro RSI: {e}")
+            print(f"[DEBUG] Erro RSI calculation: {e}")
         return None
 
 def is_manipulation_hour():
@@ -126,19 +145,13 @@ def is_manipulation_hour():
     utc_now = datetime.now(timezone.utc)
     hour = utc_now.hour
     
-    # Horários de maior atividade suspeita:
-    # 0-2h: Ásia acordando
-    # 8-10h: Europa acordando  
-    # 14-16h: EUA acordando
-    # 22-23h: Final do dia EUA
+    # Horários de maior atividade suspeita
     high_activity_hours = [0, 1, 2, 8, 9, 10, 14, 15, 16, 22, 23]
     return hour in high_activity_hours
 
 # ========= Filtro OPTIMIZADO para Binance =========
 def pick_symbols_by_24h_volume(ex, top_n=50, quotes=None):
-    """
-    Escolhe pares OPTIMIZADO para detectar manipulações na Binance
-    """
+    """Escolhe pares OPTIMIZADO para detectar manipulações na Binance"""
     if quotes is None:
         quotes = QUOTE_FILTER
         
@@ -195,7 +208,7 @@ def fetch_ohlcv_safe(ex, symbol, timeframe, limit):
         return None
 
 # =========================
-#   DETECÇÃO DE MANIPULAÇÃO MELHORADA
+#   DETECÇÃO DE MANIPULAÇÃO
 # =========================
 def detect_pump_pattern(ohlcv):
     """Detecta padrões de pump específicos da Binance"""
@@ -206,18 +219,18 @@ def detect_pump_pattern(ohlcv):
     volumes = [c[5] for c in last_10]
     prices = [c[4] for c in last_10]
     
-    # Padrão 1: Volume crescente + preço crescente (acumulação)
+    # Padrão 1: Volume crescente + preço crescente
     vol_trend = sum(volumes[-3:]) / sum(volumes[:3]) if sum(volumes[:3]) > 0 else 0
     price_change = (prices[-1] - prices[0]) / prices[0] if prices[0] > 0 else 0
     
-    if vol_trend > 3 and price_change > 0.05:  # Volume 3x + preço +5%
+    if vol_trend > 3 and price_change > 0.05:
         return True, "ACCUMULATION_PUMP", {
             "vol_trend": vol_trend,
             "price_change": price_change,
             "confidence": "HIGH" if vol_trend > 5 else "MEDIUM"
         }
     
-    # Padrão 2: Spike súbito (coordenação)
+    # Padrão 2: Spike súbito
     max_vol = max(volumes)
     avg_vol = sum(volumes[:-1]) / len(volumes[:-1]) if len(volumes) > 1 else 0
     
@@ -234,30 +247,34 @@ def calculate_risk_score(volume_mult, price_change, rsi, market_cap_usd):
     """Calcula risk score de 1-10 para a manipulação"""
     score = 0
     
-    # Volume spike severity (0-4 pontos)
+    # Volume spike severity
     if volume_mult > 20: score += 4
     elif volume_mult > 10: score += 3
     elif volume_mult > 5: score += 2
     elif volume_mult > 3: score += 1
     
-    # Price movement (0-3 pontos)
+    # Price movement
     abs_change = abs(price_change)
-    if abs_change > 0.2: score += 3      # >20%
-    elif abs_change > 0.1: score += 2    # >10%
-    elif abs_change > 0.05: score += 1   # >5%
+    if abs_change > 0.2: score += 3
+    elif abs_change > 0.1: score += 2
+    elif abs_change > 0.05: score += 1
     
-    # RSI extremes (0-2 pontos)
+    # RSI extremes
     if rsi is not None:
-        if rsi > 85 or rsi < 15: score += 2
-        elif rsi > 75 or rsi < 25: score += 1
+        try:
+            rsi_val = float(rsi)
+            if rsi_val > 85 or rsi_val < 15: score += 2
+            elif rsi_val > 75 or rsi_val < 25: score += 1
+        except:
+            pass
     
-    # Market cap (smaller = higher risk) (0-1 pontos)
+    # Market cap
     if market_cap_usd < 5_000_000: score += 1
     
     return min(score, 10)
 
 # =========================
-#   STOP HUNTING DETECTOR (melhorado)
+#   STOP HUNTING DETECTOR
 # =========================
 def candle_parts(c):
     o, h, l, cl, v = c[1], c[2], c[3], c[4], c[5]
@@ -267,51 +284,42 @@ def candle_parts(c):
     lower = min(o, cl) - l
     return o, h, l, cl, v, rng, body, upper, lower
 
-def detect_stop_hunt(ohlcv,
-                     wick_body_ratio=SH_WICK_BODY_RATIO,
-                     wick_range_pct=SH_WICK_RANGE_PCT,
-                     min_retrace_pct=SH_MIN_RETRACE_PCT,
-                     use_volume=SH_USE_VOLUME,
-                     vol_mult=SH_VOL_MULT,
-                     lookback_for_vol=LOOKBACK):
-    """Detecta stop hunting (mais sensível)"""
-    if len(ohlcv) < max(lookback_for_vol, 3):
+def detect_stop_hunt(ohlcv):
+    """Detecta stop hunting"""
+    if len(ohlcv) < max(LOOKBACK, 3):
         return False, None, {}
 
     last = ohlcv[-1]
     o, h, l, cl, v, rng, body, upper, lower = candle_parts(last)
 
-    vols = [c[5] for c in ohlcv[-(lookback_for_vol+1):-1]]
+    vols = [c[5] for c in ohlcv[-(LOOKBACK+1):-1]]
     vol_avg = sum(vols)/len(vols) if vols else 0.0
-    vol_ok = (not use_volume) or (vol_avg > 0 and v >= vol_mult * vol_avg)
+    vol_ok = (not SH_USE_VOLUME) or (vol_avg > 0 and v >= SH_VOL_MULT * vol_avg)
 
     # Retracções
     retrace_from_low = (cl - l) / rng if rng > 0 else 0.0
     retrace_from_high = (h - cl) / rng if rng > 0 else 0.0
 
-    # Condições (mais sensíveis)
-    cond_down = (lower >= wick_body_ratio * body) and (lower >= wick_range_pct * rng)
-    cond_up = (upper >= wick_body_ratio * body) and (upper >= wick_range_pct * rng)
+    # Condições
+    cond_down = (lower >= SH_WICK_BODY_RATIO * body) and (lower >= SH_WICK_RANGE_PCT * rng)
+    cond_up = (upper >= SH_WICK_BODY_RATIO * body) and (upper >= SH_WICK_RANGE_PCT * rng)
 
     found = False
     side = None
 
-    if cond_down and (retrace_from_low >= min_retrace_pct) and vol_ok:
+    if cond_down and (retrace_from_low >= SH_MIN_RETRACE_PCT) and vol_ok:
         found, side = True, "down"
-    if cond_up and (retrace_from_high >= min_retrace_pct) and vol_ok:
+    if cond_up and (retrace_from_high >= SH_MIN_RETRACE_PCT) and vol_ok:
         found, side = True, "up"
 
     info = {
-        "o": o, "h": h, "l": l, "c": cl, "v": v,
-        "range": rng, "body": body, "upper": upper, "lower": lower,
-        "retrace_from_low": retrace_from_low,
-        "retrace_from_high": retrace_from_high,
-        "vol_avg": vol_avg, "vol_mult": (v/vol_avg) if vol_avg else None
+        "vol_mult": (v/vol_avg) if vol_avg else None,
+        "side": side
     }
     return found, side, info
 
 # =========================
-#   ALERTAS MELHORADOS
+#   ALERTAS
 # =========================
 last_alert_ts = defaultdict(lambda: 0.0)
 
@@ -323,7 +331,7 @@ def can_alert(key: str, now_ts: float) -> bool:
     return False
 
 def send_manipulation_alert(symbol, alert_type, data):
-    """Alerta específico para manipulações"""
+    """Alerta específico para manipulações - VERSÃO SEGURA"""
     confidence = data.get('confidence', 'MEDIUM')
     price_change = data.get('price_change', 0)
     volume_mult = data.get('volume_multiple', 0)
@@ -336,13 +344,15 @@ def send_manipulation_alert(symbol, alert_type, data):
         'ACCUMULATION_PUMP': '🔥',
         'COORDINATED_PUMP': '💥',
         'DUMP_WARNING': '🔴',
-        'STOP_HUNT': '🩸' if data.get('side') == 'down' else '🧨'
+        'STOP_HUNT': '🩸'
     }
     
     emoji = emoji_map.get(alert_type, '⚠️')
     
-    msg = f"""
-{emoji} <b>BINANCE MANIPULATION DETECTED</b>
+    # Formatação SEGURA do RSI
+    rsi_text = safe_rsi_format(rsi)
+    
+    msg = f"""{emoji} <b>BINANCE MANIPULATION DETECTED</b>
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 <b>Par:</b> {symbol}
@@ -354,19 +364,13 @@ def send_manipulation_alert(symbol, alert_type, data):
 • Preço: {price_change:+.2f}%
 • Volume: {volume_mult:.1f}x média
 • Timeframe: {TIMEFRAME}
-• Hora: {datetime.now(timezone.utc).strftime('%H:%M:%S UTC')}"""
-
-    if rsi is not None:
-        msg += f"\n• RSI: {rsi:.1f}"
-        if rsi > 80:
-            msg += " ⚠️ OVERBOUGHT"
-        elif rsi < 20:
-            msg += " ⚠️ OVERSOLD"
+• Hora: {datetime.now(timezone.utc).strftime('%H:%M:%S UTC')}
+• RSI: {rsi_text}"""
 
     # Recomendação baseada no tipo
     if alert_type == 'ACCUMULATION_PUMP':
         msg += "\n\n<b>💡 Recomendação:</b> 🟢 Possível ENTRY zone"
-    elif alert_type == 'DUMP_WARNING' or (rsi and rsi > 80):
+    elif alert_type == 'DUMP_WARNING':
         msg += "\n\n<b>💡 Recomendação:</b> 🔴 DUMP risk - Monitor exits"
     elif alert_type == 'COORDINATED_PUMP':
         msg += "\n\n<b>💡 Recomendação:</b> 🟡 Quick pump - Cuidado"
@@ -378,7 +382,7 @@ def send_manipulation_alert(symbol, alert_type, data):
     send_telegram(msg)
 
 # =========================
-#   MAIN LOOP OPTIMIZADO
+#   MAIN LOOP
 # =========================
 def main():
     print("🚀 Iniciando bot OPTIMIZADO para detectar manipulações na Binance...")
@@ -414,11 +418,6 @@ def main():
     while True:
         loop_start = time.time()
         
-        # Check se é horário de alta atividade
-        high_activity = is_manipulation_hour()
-        if DEBUG_MODE and high_activity:
-            print(f"[DEBUG] ⏰ Horário de alta atividade: {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
-        
         for name, ex in exchanges.items():
             symbols = watchlist.get(name, [])
             
@@ -434,7 +433,6 @@ def main():
                     vol_avg = (sum(volumes) / len(volumes)) if volumes else 0.0
                     vol_last = last[5]
                     close_last = last[4]
-                    ts_last = last[0]
 
                     # Calcular múltiplo de volume
                     vol_multiple = vol_last / vol_avg if vol_avg > 0 else 0
@@ -445,16 +443,17 @@ def main():
                         prev_close = hist[-1][4]
                         price_change = (close_last - prev_close) / prev_close if prev_close > 0 else 0
 
-                    # RSI
+                    # RSI - VERSÃO SEGURA
                     prices = [c[4] for c in ohlcv]
                     rsi = calculate_rsi(prices, RSI_PERIOD)
 
-                    # Market cap estimate (aproximado)
-                    market_cap_est = close_last * 1_000_000  # Rough estimate
+                    # Market cap estimate
+                    market_cap_est = close_last * 1_000_000
 
-                    # DEBUG logs para volume activity
+                    # DEBUG logs - VERSÃO SEGURA
                     if DEBUG_MODE and vol_multiple > 2:
-                        print(f"[DEBUG] {sym}: {vol_multiple:.1f}x volume, preço {price_change:+.2f}%, RSI {rsi:.1f if rsi else 'N/A'}")
+                        rsi_display = safe_rsi_format(rsi)
+                        print(f"[DEBUG] {sym}: {vol_multiple:.1f}x volume, preço {price_change:+.2f}%, RSI {rsi_display}")
 
                     # ---------- ALERTA 1: VOLUME SPIKE ----------
                     if vol_avg > 0 and vol_multiple >= THRESHOLD:
@@ -485,17 +484,22 @@ def main():
                             })
 
                     # ---------- ALERTA 3: DUMP WARNING ----------
-                    if rsi and rsi > 80 and vol_multiple > 2:
-                        key = f"DUMP:{name}:{sym}"
-                        if can_alert(key, time.time()):
-                            risk_score = calculate_risk_score(vol_multiple, price_change, rsi, market_cap_est)
-                            send_manipulation_alert(sym, "DUMP_WARNING", {
-                                "volume_multiple": vol_multiple,
-                                "price_change": price_change * 100,
-                                "risk_score": risk_score,
-                                "rsi": rsi,
-                                "confidence": "HIGH"
-                            })
+                    if rsi is not None:
+                        try:
+                            rsi_val = float(rsi)
+                            if rsi_val > 80 and vol_multiple > 2:
+                                key = f"DUMP:{name}:{sym}"
+                                if can_alert(key, time.time()):
+                                    risk_score = calculate_risk_score(vol_multiple, price_change, rsi, market_cap_est)
+                                    send_manipulation_alert(sym, "DUMP_WARNING", {
+                                        "volume_multiple": vol_multiple,
+                                        "price_change": price_change * 100,
+                                        "risk_score": risk_score,
+                                        "rsi": rsi,
+                                        "confidence": "HIGH"
+                                    })
+                        except:
+                            pass
 
                     # ---------- ALERTA 4: STOP HUNTING ----------
                     sh_found, sh_side, sh = detect_stop_hunt(ohlcv)
@@ -512,17 +516,15 @@ def main():
                             })
 
                 except ccxt.NetworkError:
-                    continue  # Rate limit, ignora
+                    continue
                 except Exception as e:
                     if DEBUG_MODE:
                         print(f"[ERROR] {name} {sym}: {e}")
                     continue
 
-        # Pausa respeitando rate limits
+        # Pausa
         elapsed = time.time() - loop_start
         sleep_time = max(0, SLEEP_SECONDS - elapsed)
-        if DEBUG_MODE and sleep_time < 5:
-            print(f"[DEBUG] ⚡ Loop rápido: {elapsed:.1f}s")
         time.sleep(sleep_time)
 
 if __name__ == "__main__":
