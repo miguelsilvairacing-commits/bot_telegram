@@ -96,22 +96,30 @@ def build_exchange(name: str):
 
 def calculate_rsi(prices, period=14):
     """Calcula RSI simples"""
-    if len(prices) < period + 1:
+    try:
+        if len(prices) < period + 1:
+            return None
+        
+        # Converte para numpy array para evitar problemas
+        prices = np.array([float(p) for p in prices[-period-1:]])
+        
+        deltas = np.diff(prices)
+        gains = np.where(deltas > 0, deltas, 0)
+        losses = np.where(deltas < 0, -deltas, 0)
+        
+        avg_gain = np.mean(gains[-period:])
+        avg_loss = np.mean(losses[-period:])
+        
+        if avg_loss == 0:
+            return 100.0
+        
+        rs = avg_gain / avg_loss
+        rsi = 100 - (100 / (1 + rs))
+        return float(rsi)
+    except Exception as e:
+        if DEBUG_MODE:
+            print(f"[DEBUG] Erro RSI: {e}")
         return None
-    
-    deltas = np.diff(prices)
-    gains = np.where(deltas > 0, deltas, 0)
-    losses = np.where(deltas < 0, -deltas, 0)
-    
-    avg_gain = np.mean(gains[-period:])
-    avg_loss = np.mean(losses[-period:])
-    
-    if avg_loss == 0:
-        return 100
-    
-    rs = avg_gain / avg_loss
-    rsi = 100 - (100 / (1 + rs))
-    return rsi
 
 def is_manipulation_hour():
     """Horários onde manipulações são mais comuns (UTC)"""
