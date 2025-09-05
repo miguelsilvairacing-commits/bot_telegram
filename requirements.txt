@@ -1,3 +1,9 @@
+# requirements.txt - Dependências para o bot de manipulação
+
+# Suas dependências atuais
 ccxt>=4.3.0
 requests>=2.31.0
 python-dotenv>=1.0.0
+
+# Adicionar para o bot optimizado
+numpy>=1.21.0
