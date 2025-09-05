@@ -1,4 +1,4 @@
-# bot_volume.py
+# bot_volume_binance_optimized.py
 import os
 import time
 import math
@@ -6,36 +6,49 @@ from collections import defaultdict
 from datetime import datetime, timezone
 import requests
 import ccxt
+import numpy as np
 
 # =========================
-#   CONFIGURAÇÃO (ENV)
+#   CONFIGURAÇÃO OPTIMIZADA BINANCE
 # =========================
-EXCHANGES = os.getenv("EXCHANGES", "binance,bybit,okx").split(",")
-QUOTE_FILTER = os.getenv("QUOTE_FILTER", "USDT")     # "" = todos
+EXCHANGES = os.getenv("EXCHANGES", "binance").split(",")
+QUOTE_FILTER = os.getenv("QUOTE_FILTER", "USDT,BTC").split(",")
 
-# Filtro por volume 24h (para apanhar small/micro caps e cortar majors)
-QV24H_MIN_USD = float(os.getenv("QV24H_MIN_USD", "0"))          # ex.: 5_000_000
-QV24H_MAX_USD = float(os.getenv("QV24H_MAX_USD", "1e18"))       # ex.: 200_000_000
-SYMBOLS_BLACKLIST = set(
-    s.strip() for s in os.getenv("SYMBOLS_BLACKLIST", "").split(",") if s.strip()
-)
+# Filtro OPTIMIZADO para micro caps Binance
+QV24H_MIN_USD = float(os.getenv("QV24H_MIN_USD", "1000000"))      # $1M mínimo
+QV24H_MAX_USD = float(os.getenv("QV24H_MAX_USD", "30000000"))     # $30M máximo
 
-TOP_N_BY_VOLUME = int(os.getenv("TOP_N_BY_VOLUME", "30"))
+# Blacklist de majors (não interessam para manipulação)
+SYMBOLS_BLACKLIST = set([
+    "BTC/USDT", "ETH/USDT", "BNB/USDT", "ADA/USDT", "SOL/USDT", 
+    "DOT/USDT", "AVAX/USDT", "MATIC/USDT", "LINK/USDT", "UNI/USDT",
+    "LTC/USDT", "BCH/USDT", "XRP/USDT", "DOGE/USDT", "ATOM/USDT"
+] + os.getenv("SYMBOLS_BLACKLIST", "").split(","))
 
-TIMEFRAME = os.getenv("TIMEFRAME", "4h")             # ex.: 1m,5m,15m,1h,4h,1d
-LOOKBACK = int(os.getenv("LOOKBACK", "20"))          # média de volume
-THRESHOLD = float(os.getenv("THRESHOLD", "10"))      # múltiplo p/ spike (ex.: 10×)
+TOP_N_BY_VOLUME = int(os.getenv("TOP_N_BY_VOLUME", "50"))         # Mais pares
 
-# Stop hunting
-SH_WICK_BODY_RATIO = float(os.getenv("SH_WICK_BODY_RATIO", "2.5"))
-SH_WICK_RANGE_PCT  = float(os.getenv("SH_WICK_RANGE_PCT", "0.6"))
-SH_MIN_RETRACE_PCT = float(os.getenv("SH_MIN_RETRACE_PCT", "0.5"))
+# TIMEFRAMES CURTOS para apanhar manipulações rápidas
+TIMEFRAME = os.getenv("TIMEFRAME", "1m")                          # 1m em vez de 4h!
+LOOKBACK = int(os.getenv("LOOKBACK", "10"))                       # Menos lookback
+THRESHOLD = float(os.getenv("THRESHOLD", "3.0"))                  # 3x em vez de 10x
+
+# Multi-timeframe analysis
+TIMEFRAMES = ["1m", "5m"]                                         # Verificar ambos
+RSI_PERIOD = int(os.getenv("RSI_PERIOD", "14"))                   # Para dump warnings
+
+# Stop hunting MAIS SENSÍVEL
+SH_WICK_BODY_RATIO = float(os.getenv("SH_WICK_BODY_RATIO", "1.5"))  # Era 2.5
+SH_WICK_RANGE_PCT  = float(os.getenv("SH_WICK_RANGE_PCT", "0.4"))   # Era 0.6  
+SH_MIN_RETRACE_PCT = float(os.getenv("SH_MIN_RETRACE_PCT", "0.3"))   # Era 0.5
 SH_USE_VOLUME      = os.getenv("SH_USE_VOLUME", "true").lower() == "true"
-SH_VOL_MULT        = float(os.getenv("SH_VOL_MULT", "3.0"))
+SH_VOL_MULT        = float(os.getenv("SH_VOL_MULT", "2.0"))          # Era 3.0
 
-# Ciclo e cooldowns
-SLEEP_SECONDS = int(os.getenv("SLEEP_SECONDS", "30"))
-COOLDOWN_MINUTES = int(os.getenv("COOLDOWN_MINUTES", "30"))
+# Ciclo MAIS RÁPIDO
+SLEEP_SECONDS = int(os.getenv("SLEEP_SECONDS", "15"))               # Era 30
+COOLDOWN_MINUTES = int(os.getenv("COOLDOWN_MINUTES", "10"))         # Era 30
+
+# DEBUG mode
+DEBUG_MODE = os.getenv("DEBUG_MODE", "true").lower() == "true"
 
 # Telegram
 TG_TOKEN = os.getenv("TG_TOKEN", "")
@@ -81,34 +94,67 @@ def build_exchange(name: str):
     ex.load_markets()
     return ex
 
-# ========= Filtro por INTERVALO de volume 24h (small/micro caps) =========
-def pick_symbols_by_24h_volume(ex, top_n=30, quote=QUOTE_FILTER):
+def calculate_rsi(prices, period=14):
+    """Calcula RSI simples"""
+    if len(prices) < period + 1:
+        return None
+    
+    deltas = np.diff(prices)
+    gains = np.where(deltas > 0, deltas, 0)
+    losses = np.where(deltas < 0, -deltas, 0)
+    
+    avg_gain = np.mean(gains[-period:])
+    avg_loss = np.mean(losses[-period:])
+    
+    if avg_loss == 0:
+        return 100
+    
+    rs = avg_gain / avg_loss
+    rsi = 100 - (100 / (1 + rs))
+    return rsi
+
+def is_manipulation_hour():
+    """Horários onde manipulações são mais comuns (UTC)"""
+    utc_now = datetime.now(timezone.utc)
+    hour = utc_now.hour
+    
+    # Horários de maior atividade suspeita:
+    # 0-2h: Ásia acordando
+    # 8-10h: Europa acordando  
+    # 14-16h: EUA acordando
+    # 22-23h: Final do dia EUA
+    high_activity_hours = [0, 1, 2, 8, 9, 10, 14, 15, 16, 22, 23]
+    return hour in high_activity_hours
+
+# ========= Filtro OPTIMIZADO para Binance =========
+def pick_symbols_by_24h_volume(ex, top_n=50, quotes=None):
     """
-    Escolhe pares pela janela de volume 24h, com filtros:
-    - quote (ex.: .../USDT)
-    - intervalo de volume 24h [QV24H_MIN_USD, QV24H_MAX_USD]
-    - blacklist de majors
-    - limita a top_n após o filtro
+    Escolhe pares OPTIMIZADO para detectar manipulações na Binance
     """
+    if quotes is None:
+        quotes = QUOTE_FILTER
+        
     markets = ex.load_markets()
     try:
         tickers = ex.fetch_tickers()
-    except Exception:
-        # fallback: usa mercados activos e aplica só quote e blacklist
+    except Exception as e:
+        print(f"[ERROR] Falha ao buscar tickers: {e}")
+        # fallback: usa mercados ativos
         symbols = [s for s, m in markets.items() if m.get("active")]
-        if quote:
-            symbols = [s for s in symbols if s.endswith("/" + quote)]
+        symbols = [s for s in symbols if any(s.endswith("/" + q) for q in quotes)]
         symbols = [s for s in symbols if s not in SYMBOLS_BLACKLIST]
         return symbols[:top_n]
 
     rows = []
     for sym, t in tickers.items():
-        if quote and not sym.endswith("/" + quote):
+        # Filtra por quote currency
+        if not any(sym.endswith("/" + q) for q in quotes):
             continue
+            
         if sym in SYMBOLS_BLACKLIST:
             continue
 
-        # quoteVolume pode vir em t['quoteVolume'] ou t['info']['quoteVolume']
+        # Volume 24h
         vol_q = t.get("quoteVolume") or (t.get("info") or {}).get("quoteVolume")
         try:
             vol_q = float(vol_q) if vol_q is not None else None
@@ -117,26 +163,97 @@ def pick_symbols_by_24h_volume(ex, top_n=30, quote=QUOTE_FILTER):
         if vol_q is None:
             continue
 
-        # filtro por intervalo (evita majors e micros ilíquidas)
+        # Filtro por intervalo (micro/small caps)
         if vol_q < QV24H_MIN_USD or vol_q > QV24H_MAX_USD:
             continue
 
         rows.append((sym, vol_q))
 
-    # ordenar por volume (dentro do intervalo) e cortar a top_n
+    # Ordenar por volume e cortar
     rows.sort(key=lambda x: x[1], reverse=True)
-    return [sym for sym, _ in rows[:top_n]]
+    selected = [sym for sym, _ in rows[:top_n]]
+    
+    if DEBUG_MODE:
+        print(f"[DEBUG] Selecionados {len(selected)} pares: {selected[:10]}...")
+    
+    return selected
 
 def fetch_ohlcv_safe(ex, symbol, timeframe, limit):
-    return ex.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
+    try:
+        return ex.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
+    except Exception as e:
+        if DEBUG_MODE:
+            print(f"[DEBUG] Erro OHLCV {symbol}: {e}")
+        return None
 
 # =========================
-#   STOP HUNTING DETECTOR
+#   DETECÇÃO DE MANIPULAÇÃO MELHORADA
+# =========================
+def detect_pump_pattern(ohlcv):
+    """Detecta padrões de pump específicos da Binance"""
+    if len(ohlcv) < 10:
+        return False, None, {}
+    
+    last_10 = ohlcv[-10:]
+    volumes = [c[5] for c in last_10]
+    prices = [c[4] for c in last_10]
+    
+    # Padrão 1: Volume crescente + preço crescente (acumulação)
+    vol_trend = sum(volumes[-3:]) / sum(volumes[:3]) if sum(volumes[:3]) > 0 else 0
+    price_change = (prices[-1] - prices[0]) / prices[0] if prices[0] > 0 else 0
+    
+    if vol_trend > 3 and price_change > 0.05:  # Volume 3x + preço +5%
+        return True, "ACCUMULATION_PUMP", {
+            "vol_trend": vol_trend,
+            "price_change": price_change,
+            "confidence": "HIGH" if vol_trend > 5 else "MEDIUM"
+        }
+    
+    # Padrão 2: Spike súbito (coordenação)
+    max_vol = max(volumes)
+    avg_vol = sum(volumes[:-1]) / len(volumes[:-1]) if len(volumes) > 1 else 0
+    
+    if avg_vol > 0 and max_vol > 5 * avg_vol and price_change > 0.03:
+        return True, "COORDINATED_PUMP", {
+            "vol_spike": max_vol / avg_vol,
+            "price_change": price_change,
+            "confidence": "HIGH"
+        }
+    
+    return False, None, {}
+
+def calculate_risk_score(volume_mult, price_change, rsi, market_cap_usd):
+    """Calcula risk score de 1-10 para a manipulação"""
+    score = 0
+    
+    # Volume spike severity (0-4 pontos)
+    if volume_mult > 20: score += 4
+    elif volume_mult > 10: score += 3
+    elif volume_mult > 5: score += 2
+    elif volume_mult > 3: score += 1
+    
+    # Price movement (0-3 pontos)
+    abs_change = abs(price_change)
+    if abs_change > 0.2: score += 3      # >20%
+    elif abs_change > 0.1: score += 2    # >10%
+    elif abs_change > 0.05: score += 1   # >5%
+    
+    # RSI extremes (0-2 pontos)
+    if rsi is not None:
+        if rsi > 85 or rsi < 15: score += 2
+        elif rsi > 75 or rsi < 25: score += 1
+    
+    # Market cap (smaller = higher risk) (0-1 pontos)
+    if market_cap_usd < 5_000_000: score += 1
+    
+    return min(score, 10)
+
+# =========================
+#   STOP HUNTING DETECTOR (melhorado)
 # =========================
 def candle_parts(c):
-    # ccxt OHLCV: [ts, o, h, l, c, v]
     o, h, l, cl, v = c[1], c[2], c[3], c[4], c[5]
-    rng  = max(1e-12, h - l)
+    rng = max(1e-12, h - l)
     body = abs(cl - o)
     upper = h - max(o, cl)
     lower = min(o, cl) - l
@@ -149,30 +266,24 @@ def detect_stop_hunt(ohlcv,
                      use_volume=SH_USE_VOLUME,
                      vol_mult=SH_VOL_MULT,
                      lookback_for_vol=LOOKBACK):
-    """
-    Devolve (found: bool, side: 'down'|'up'|None, info: dict)
-    Usa a última vela e a anterior para confirmar retracção/absorção.
-    """
+    """Detecta stop hunting (mais sensível)"""
     if len(ohlcv) < max(lookback_for_vol, 3):
         return False, None, {}
 
-    prev = ohlcv[-2]
     last = ohlcv[-1]
-
     o, h, l, cl, v, rng, body, upper, lower = candle_parts(last)
-    po, ph, pl, pcl, pv, prng, pbody, pupper, plower = candle_parts(prev)
 
     vols = [c[5] for c in ohlcv[-(lookback_for_vol+1):-1]]
     vol_avg = sum(vols)/len(vols) if vols else 0.0
     vol_ok = (not use_volume) or (vol_avg > 0 and v >= vol_mult * vol_avg)
 
-    # Retracções (0..1)
-    retrace_from_low  = (cl - l) / rng if rng > 0 else 0.0   # 1 = fechou perto do topo
-    retrace_from_high = (h - cl) / rng if rng > 0 else 0.0   # 1 = fechou perto do fundo
+    # Retracções
+    retrace_from_low = (cl - l) / rng if rng > 0 else 0.0
+    retrace_from_high = (h - cl) / rng if rng > 0 else 0.0
 
-    # Condições geométricas
+    # Condições (mais sensíveis)
     cond_down = (lower >= wick_body_ratio * body) and (lower >= wick_range_pct * rng)
-    cond_up   = (upper >= wick_body_ratio * body) and (upper >= wick_range_pct * rng)
+    cond_up = (upper >= wick_body_ratio * body) and (upper >= wick_range_pct * rng)
 
     found = False
     side = None
@@ -192,9 +303,9 @@ def detect_stop_hunt(ohlcv,
     return found, side, info
 
 # =========================
-#   ALERT COOLDOWNS
+#   ALERTAS MELHORADOS
 # =========================
-last_alert_ts = defaultdict(lambda: 0.0)  # chave: tipo:name:symbol
+last_alert_ts = defaultdict(lambda: 0.0)
 
 def can_alert(key: str, now_ts: float) -> bool:
     last = last_alert_ts[key]
@@ -203,12 +314,68 @@ def can_alert(key: str, now_ts: float) -> bool:
         return True
     return False
 
+def send_manipulation_alert(symbol, alert_type, data):
+    """Alerta específico para manipulações"""
+    confidence = data.get('confidence', 'MEDIUM')
+    price_change = data.get('price_change', 0)
+    volume_mult = data.get('volume_multiple', 0)
+    risk_score = data.get('risk_score', 0)
+    rsi = data.get('rsi')
+    
+    # Emojis por tipo
+    emoji_map = {
+        'VOLUME_SPIKE': '🚀' if confidence == 'HIGH' else '⚡',
+        'ACCUMULATION_PUMP': '🔥',
+        'COORDINATED_PUMP': '💥',
+        'DUMP_WARNING': '🔴',
+        'STOP_HUNT': '🩸' if data.get('side') == 'down' else '🧨'
+    }
+    
+    emoji = emoji_map.get(alert_type, '⚠️')
+    
+    msg = f"""
+{emoji} <b>BINANCE MANIPULATION DETECTED</b>
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+<b>Par:</b> {symbol}
+<b>Tipo:</b> {alert_type}
+<b>Risk Score:</b> {risk_score}/10
+<b>Confiança:</b> {confidence}
+
+<b>📊 Métricas:</b>
+• Preço: {price_change:+.2f}%
+• Volume: {volume_mult:.1f}x média
+• Timeframe: {TIMEFRAME}
+• Hora: {datetime.now(timezone.utc).strftime('%H:%M:%S UTC')}"""
+
+    if rsi is not None:
+        msg += f"\n• RSI: {rsi:.1f}"
+        if rsi > 80:
+            msg += " ⚠️ OVERBOUGHT"
+        elif rsi < 20:
+            msg += " ⚠️ OVERSOLD"
+
+    # Recomendação baseada no tipo
+    if alert_type == 'ACCUMULATION_PUMP':
+        msg += "\n\n<b>💡 Recomendação:</b> 🟢 Possível ENTRY zone"
+    elif alert_type == 'DUMP_WARNING' or (rsi and rsi > 80):
+        msg += "\n\n<b>💡 Recomendação:</b> 🔴 DUMP risk - Monitor exits"
+    elif alert_type == 'COORDINATED_PUMP':
+        msg += "\n\n<b>💡 Recomendação:</b> 🟡 Quick pump - Cuidado"
+    
+    # Link direto para Binance
+    binance_symbol = symbol.replace('/', '')
+    msg += f"\n\n<b>🔗 Binance:</b> https://www.binance.com/en/trade/{binance_symbol}"
+    
+    send_telegram(msg)
+
 # =========================
-#   MAIN LOOP
+#   MAIN LOOP OPTIMIZADO
 # =========================
 def main():
-    print("A iniciar bot…")
-    # Instanciar exchanges e watchlists
+    print("🚀 Iniciando bot OPTIMIZADO para detectar manipulações na Binance...")
+    
+    # Instanciar Binance
     exchanges = {}
     watchlist = {}
 
@@ -221,23 +388,36 @@ def main():
             exchanges[name] = ex
             syms = pick_symbols_by_24h_volume(ex, TOP_N_BY_VOLUME, QUOTE_FILTER)
             watchlist[name] = syms
-            print(f"[{name}] A monitorizar {len(syms)} pares. Ex.: {syms[:8]}")
+            print(f"[{name}] 📊 Monitorizando {len(syms)} pares")
+            if DEBUG_MODE:
+                print(f"[{name}] Exemplos: {syms[:8]}")
         except Exception as e:
-            print(f"[{name}] Falha na preparação: {e}")
+            print(f"[{name}] ❌ Falha: {e}")
 
     if not exchanges:
-        raise SystemExit("Nenhuma exchange válida configurada.")
+        raise SystemExit("❌ Nenhuma exchange configurada.")
 
-    send_telegram("✅ Bot de volume iniciado. Vou avisar sobre spikes e possíveis stop hunts.")
+    send_telegram("✅ Bot de MANIPULAÇÃO BINANCE iniciado!\n🎯 Foco: Small/micro caps\n⏱️ Timeframe: 1m\n🔍 Threshold: 3x volume")
+
+    print(f"🔄 Loop iniciado - scan a cada {SLEEP_SECONDS}s")
+    if DEBUG_MODE:
+        print("🐛 DEBUG MODE ativo - logs detalhados")
 
     while True:
         loop_start = time.time()
+        
+        # Check se é horário de alta atividade
+        high_activity = is_manipulation_hour()
+        if DEBUG_MODE and high_activity:
+            print(f"[DEBUG] ⏰ Horário de alta atividade: {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
+        
         for name, ex in exchanges.items():
             symbols = watchlist.get(name, [])
+            
             for sym in symbols:
                 try:
-                    # Buscar N+1 velas para média + última
-                    ohlcv = fetch_ohlcv_safe(ex, sym, TIMEFRAME, limit=LOOKBACK + 1)
+                    # Buscar dados para análise
+                    ohlcv = fetch_ohlcv_safe(ex, sym, TIMEFRAME, limit=LOOKBACK + 15)
                     if not ohlcv or len(ohlcv) < LOOKBACK + 1:
                         continue
 
@@ -248,63 +428,100 @@ def main():
                     close_last = last[4]
                     ts_last = last[0]
 
-                    # ---------- Alerta: SPIKE DE VOLUME ----------
-                    if vol_avg > 0 and vol_last >= THRESHOLD * vol_avg:
-                        multiple = vol_last / vol_avg
+                    # Calcular múltiplo de volume
+                    vol_multiple = vol_last / vol_avg if vol_avg > 0 else 0
+                    
+                    # Preço change
+                    price_change = 0
+                    if len(hist) > 0:
+                        prev_close = hist[-1][4]
+                        price_change = (close_last - prev_close) / prev_close if prev_close > 0 else 0
+
+                    # RSI
+                    prices = [c[4] for c in ohlcv]
+                    rsi = calculate_rsi(prices, RSI_PERIOD)
+
+                    # Market cap estimate (aproximado)
+                    market_cap_est = close_last * 1_000_000  # Rough estimate
+
+                    # DEBUG logs para volume activity
+                    if DEBUG_MODE and vol_multiple > 2:
+                        print(f"[DEBUG] {sym}: {vol_multiple:.1f}x volume, preço {price_change:+.2f}%, RSI {rsi:.1f if rsi else 'N/A'}")
+
+                    # ---------- ALERTA 1: VOLUME SPIKE ----------
+                    if vol_avg > 0 and vol_multiple >= THRESHOLD:
+                        risk_score = calculate_risk_score(vol_multiple, price_change, rsi, market_cap_est)
+                        
                         key = f"SPIKE:{name}:{sym}"
                         if can_alert(key, time.time()):
-                            msg = (
-                                f"🚨 <b>Volume spike</b>\n"
-                                f"Exchange: <b>{name}</b>\n"
-                                f"Par: <b>{sym}</b> • TF: <b>{TIMEFRAME}</b>\n"
-                                f"Hora vela: <b>{ts_iso(ts_last)}</b>\n"
-                                f"Preço fecho: <b>{close_last}</b>\n"
-                                f"Volume: <b>{short_num(vol_last)}</b> "
-                                f"(~<b>{multiple:.2f}×</b> acima da média {LOOKBACK})"
-                            )
-                            send_telegram(msg)
+                            send_manipulation_alert(sym, "VOLUME_SPIKE", {
+                                "volume_multiple": vol_multiple,
+                                "price_change": price_change * 100,
+                                "risk_score": risk_score,
+                                "rsi": rsi,
+                                "confidence": "HIGH" if vol_multiple > 10 else "MEDIUM"
+                            })
 
-                    # ---------- Alerta: STOP HUNTING ----------
-                    sh_found, sh_side, sh = detect_stop_hunt(
-                        ohlcv,
-                        wick_body_ratio=SH_WICK_BODY_RATIO,
-                        wick_range_pct=SH_WICK_RANGE_PCT,
-                        min_retrace_pct=SH_MIN_RETRACE_PCT,
-                        use_volume=SH_USE_VOLUME,
-                        vol_mult=SH_VOL_MULT,
-                        lookback_for_vol=LOOKBACK
-                    )
+                    # ---------- ALERTA 2: PUMP PATTERNS ----------
+                    pump_found, pump_type, pump_data = detect_pump_pattern(ohlcv)
+                    if pump_found:
+                        key = f"PUMP:{pump_type}:{name}:{sym}"
+                        if can_alert(key, time.time()):
+                            risk_score = calculate_risk_score(vol_multiple, price_change, rsi, market_cap_est)
+                            send_manipulation_alert(sym, pump_type, {
+                                "volume_multiple": vol_multiple,
+                                "price_change": price_change * 100,
+                                "risk_score": risk_score,
+                                "rsi": rsi,
+                                "confidence": pump_data.get("confidence", "MEDIUM")
+                            })
+
+                    # ---------- ALERTA 3: DUMP WARNING ----------
+                    if rsi and rsi > 80 and vol_multiple > 2:
+                        key = f"DUMP:{name}:{sym}"
+                        if can_alert(key, time.time()):
+                            risk_score = calculate_risk_score(vol_multiple, price_change, rsi, market_cap_est)
+                            send_manipulation_alert(sym, "DUMP_WARNING", {
+                                "volume_multiple": vol_multiple,
+                                "price_change": price_change * 100,
+                                "risk_score": risk_score,
+                                "rsi": rsi,
+                                "confidence": "HIGH"
+                            })
+
+                    # ---------- ALERTA 4: STOP HUNTING ----------
+                    sh_found, sh_side, sh = detect_stop_hunt(ohlcv)
                     if sh_found:
                         key = f"STOPHUNT:{sh_side}:{name}:{sym}"
                         if can_alert(key, time.time()):
-                            emoji = "🩸" if sh_side == "down" else "🧨"
-                            msg = (
-                                f"{emoji} <b>Possível STOP HUNT</b>\n"
-                                f"Exchange: <b>{name}</b>\n"
-                                f"Par: <b>{sym}</b> • TF: <b>{TIMEFRAME}</b>\n"
-                                f"Hora vela: <b>{ts_iso(ohlcv[-1][0])}</b>\n"
-                                f"Direcção: <b>{'para baixo (pavio inferior)' if sh_side=='down' else 'para cima (pavio superior)'}</b>\n"
-                                f"Fecho: <b>{sh['c']}</b> | High/Low: <b>{sh['h']}/{sh['l']}</b>\n"
-                                f"Pavio sup/inf: <b>{sh['upper']:.6f}/{sh['lower']:.6f}</b> | Corpo: <b>{sh['body']:.6f}</b>\n"
-                                f"Retracção: <b>{(sh['retrace_from_low']*100):.0f}%</b> (de baixo) / "
-                                f"<b>{(sh['retrace_from_high']*100):.0f}%</b> (de cima)\n"
-                                + (f"Volume: <b>{short_num(sh['v'])}</b> (~<b>{sh['vol_mult']:.2f}×</b> média) " if sh.get('vol_avg') else "")
-                            )
-                            send_telegram(msg)
+                            send_manipulation_alert(sym, "STOP_HUNT", {
+                                "side": sh_side,
+                                "volume_multiple": sh.get('vol_mult', 0),
+                                "price_change": price_change * 100,
+                                "risk_score": calculate_risk_score(sh.get('vol_mult', 0), price_change, rsi, market_cap_est),
+                                "rsi": rsi,
+                                "confidence": "MEDIUM"
+                            })
 
                 except ccxt.NetworkError:
-                    # Intermitências da API: ignora e segue
-                    continue
+                    continue  # Rate limit, ignora
                 except Exception as e:
-                    print(f"[{name}] Erro em {sym}: {e}")
+                    if DEBUG_MODE:
+                        print(f"[ERROR] {name} {sym}: {e}")
                     continue
 
         # Pausa respeitando rate limits
         elapsed = time.time() - loop_start
-        time.sleep(max(0, SLEEP_SECONDS - elapsed))
+        sleep_time = max(0, SLEEP_SECONDS - elapsed)
+        if DEBUG_MODE and sleep_time < 5:
+            print(f"[DEBUG] ⚡ Loop rápido: {elapsed:.1f}s")
+        time.sleep(sleep_time)
 
 if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
-        print("Encerrado.")
+        print("\n👋 Bot encerrado pelo utilizador.")
+    except Exception as e:
+        print(f"❌ Erro fatal: {e}")
+        send_telegram(f"❌ Bot crashed: {e}")
