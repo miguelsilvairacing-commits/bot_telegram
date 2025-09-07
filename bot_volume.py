@@ -1,4 +1,4 @@
-# bot_volume_binance_clean.py
+# bot_volume_with_filters.py
 import os
 import time
 import math
@@ -9,44 +9,55 @@ import ccxt
 import numpy as np
 
 # =========================
-#   CONFIGURAÇÃO OPTIMIZADA BINANCE
+#   CONFIGURAÇÃO AVANÇADA
 # =========================
 EXCHANGES = os.getenv("EXCHANGES", "binance").split(",")
 QUOTE_FILTER = os.getenv("QUOTE_FILTER", "USDT,BTC").split(",")
 
-# Filtro OPTIMIZADO para micro caps Binance
-QV24H_MIN_USD = float(os.getenv("QV24H_MIN_USD", "1000000"))      # $1M mínimo
-QV24H_MAX_USD = float(os.getenv("QV24H_MAX_USD", "30000000"))     # $30M máximo
+# Market cap filtering
+QV24H_MIN_USD = float(os.getenv("QV24H_MIN_USD", "2000000"))      # $2M mínimo
+QV24H_MAX_USD = float(os.getenv("QV24H_MAX_USD", "20000000"))     # $20M máximo
 
-# Blacklist de majors (não interessam para manipulação)
+# Blacklist
 SYMBOLS_BLACKLIST = set([
     "BTC/USDT", "ETH/USDT", "BNB/USDT", "ADA/USDT", "SOL/USDT", 
     "DOT/USDT", "AVAX/USDT", "MATIC/USDT", "LINK/USDT", "UNI/USDT",
     "LTC/USDT", "BCH/USDT", "XRP/USDT", "DOGE/USDT", "ATOM/USDT"
 ] + [s.strip() for s in os.getenv("SYMBOLS_BLACKLIST", "").split(",") if s.strip()])
 
-TOP_N_BY_VOLUME = int(os.getenv("TOP_N_BY_VOLUME", "50"))         # Mais pares
+TOP_N_BY_VOLUME = int(os.getenv("TOP_N_BY_VOLUME", "30"))
 
-# TIMEFRAMES CURTOS para apanhar manipulações rápidas
-TIMEFRAME = os.getenv("TIMEFRAME", "1m")                          # 1m em vez de 4h!
-LOOKBACK = int(os.getenv("LOOKBACK", "10"))                       # Menos lookback
-THRESHOLD = float(os.getenv("THRESHOLD", "3.0"))                  # 3x em vez de 10x
+# Detection thresholds
+TIMEFRAME = os.getenv("TIMEFRAME", "1m")
+LOOKBACK = int(os.getenv("LOOKBACK", "10"))
+THRESHOLD = float(os.getenv("THRESHOLD", "5.0"))                 # Volume threshold
 
-# Multi-timeframe analysis
-RSI_PERIOD = int(os.getenv("RSI_PERIOD", "14"))                   # Para dump warnings
+# 🚨 NOVOS FILTROS DE QUALIDADE
+MIN_RISK_SCORE = int(os.getenv("MIN_RISK_SCORE", "6"))           # ⭐ NOVO: Só alertas com risk score 6+
+MIN_PRICE_CHANGE = float(os.getenv("MIN_PRICE_CHANGE", "0.08"))  # ⭐ NOVO: Mínimo 8% price movement
+HIGH_CONFIDENCE_ONLY = os.getenv("HIGH_CONFIDENCE_ONLY", "false").lower() == "true"  # ⭐ NOVO
 
-# Stop hunting MAIS SENSÍVEL
-SH_WICK_BODY_RATIO = float(os.getenv("SH_WICK_BODY_RATIO", "1.5"))  # Era 2.5
-SH_WICK_RANGE_PCT  = float(os.getenv("SH_WICK_RANGE_PCT", "0.4"))   # Era 0.6  
-SH_MIN_RETRACE_PCT = float(os.getenv("SH_MIN_RETRACE_PCT", "0.3"))   # Era 0.5
-SH_USE_VOLUME      = os.getenv("SH_USE_VOLUME", "true").lower() == "true"
-SH_VOL_MULT        = float(os.getenv("SH_VOL_MULT", "2.0"))          # Era 3.0
+# RSI settings
+RSI_PERIOD = int(os.getenv("RSI_PERIOD", "14"))
+RSI_OVERBOUGHT = float(os.getenv("RSI_OVERBOUGHT", "80"))        # ⭐ NOVO: RSI threshold para dump warning
+RSI_OVERSOLD = float(os.getenv("RSI_OVERSOLD", "20"))            # ⭐ NOVO
 
-# Ciclo MAIS RÁPIDO
-SLEEP_SECONDS = int(os.getenv("SLEEP_SECONDS", "15"))               # Era 30
-COOLDOWN_MINUTES = int(os.getenv("COOLDOWN_MINUTES", "10"))         # Era 30
+# Stop hunting (mais restritivo)
+SH_WICK_BODY_RATIO = float(os.getenv("SH_WICK_BODY_RATIO", "2.0"))  # Mais restritivo
+SH_WICK_RANGE_PCT = float(os.getenv("SH_WICK_RANGE_PCT", "0.5"))    
+SH_MIN_RETRACE_PCT = float(os.getenv("SH_MIN_RETRACE_PCT", "0.4"))   
+SH_USE_VOLUME = os.getenv("SH_USE_VOLUME", "true").lower() == "true"
+SH_VOL_MULT = float(os.getenv("SH_VOL_MULT", "3.0"))               # Mais restritivo
 
-# DEBUG mode
+# Timing
+SLEEP_SECONDS = int(os.getenv("SLEEP_SECONDS", "20"))
+COOLDOWN_MINUTES = int(os.getenv("COOLDOWN_MINUTES", "30"))
+
+# 🕐 NOVO: Filtros de horário
+ALERT_HOURS = [int(x.strip()) for x in os.getenv("ALERT_HOURS", "0,1,2,8,9,10,14,15,16,22,23").split(",") if x.strip()]
+WEEKEND_QUIET_MODE = os.getenv("WEEKEND_QUIET_MODE", "false").lower() == "true"
+
+# Debug
 DEBUG_MODE = os.getenv("DEBUG_MODE", "true").lower() == "true"
 
 # Telegram
@@ -104,12 +115,11 @@ def safe_rsi_format(rsi_value):
         return "N/A"
 
 def calculate_rsi(prices, period=14):
-    """Calcula RSI simples - versão mais segura"""
+    """Calcula RSI"""
     try:
         if not prices or len(prices) < period + 1:
             return None
         
-        # Garantir que são números
         clean_prices = []
         for p in prices[-(period+1):]:
             try:
@@ -137,21 +147,36 @@ def calculate_rsi(prices, period=14):
         
     except Exception as e:
         if DEBUG_MODE:
-            print(f"[DEBUG] Erro RSI calculation: {e}")
+            print(f"[DEBUG] Erro RSI: {e}")
         return None
 
+# 🕐 NOVO: Verificações de timing
+def is_alert_hour():
+    """Verifica se está num horário válido para alertas"""
+    if not ALERT_HOURS:
+        return True
+    
+    utc_now = datetime.now(timezone.utc)
+    current_hour = utc_now.hour
+    
+    # Weekend quiet mode
+    if WEEKEND_QUIET_MODE and utc_now.weekday() >= 5:  # Saturday = 5, Sunday = 6
+        return current_hour in [8, 9, 14, 15, 22]  # Só horários prime no fim de semana
+    
+    return current_hour in ALERT_HOURS
+
 def is_manipulation_hour():
-    """Horários onde manipulações são mais comuns (UTC)"""
+    """Horários de maior atividade suspeita"""
     utc_now = datetime.now(timezone.utc)
     hour = utc_now.hour
-    
-    # Horários de maior atividade suspeita
     high_activity_hours = [0, 1, 2, 8, 9, 10, 14, 15, 16, 22, 23]
     return hour in high_activity_hours
 
-# ========= Filtro OPTIMIZADO para Binance =========
-def pick_symbols_by_24h_volume(ex, top_n=50, quotes=None):
-    """Escolhe pares OPTIMIZADO para detectar manipulações na Binance"""
+# =========================
+#   FILTROS DE SYMBOLS
+# =========================
+def pick_symbols_by_24h_volume(ex, top_n=30, quotes=None):
+    """Seleção de símbolos otimizada"""
     if quotes is None:
         quotes = QUOTE_FILTER
         
@@ -160,7 +185,6 @@ def pick_symbols_by_24h_volume(ex, top_n=50, quotes=None):
         tickers = ex.fetch_tickers()
     except Exception as e:
         print(f"[ERROR] Falha ao buscar tickers: {e}")
-        # fallback: usa mercados ativos
         symbols = [s for s, m in markets.items() if m.get("active")]
         symbols = [s for s in symbols if any(s.endswith("/" + q) for q in quotes)]
         symbols = [s for s in symbols if s not in SYMBOLS_BLACKLIST]
@@ -168,14 +192,12 @@ def pick_symbols_by_24h_volume(ex, top_n=50, quotes=None):
 
     rows = []
     for sym, t in tickers.items():
-        # Filtra por quote currency
         if not any(sym.endswith("/" + q) for q in quotes):
             continue
             
         if sym in SYMBOLS_BLACKLIST:
             continue
 
-        # Volume 24h
         vol_q = t.get("quoteVolume") or (t.get("info") or {}).get("quoteVolume")
         try:
             vol_q = float(vol_q) if vol_q is not None else None
@@ -184,18 +206,16 @@ def pick_symbols_by_24h_volume(ex, top_n=50, quotes=None):
         if vol_q is None:
             continue
 
-        # Filtro por intervalo (micro/small caps)
         if vol_q < QV24H_MIN_USD or vol_q > QV24H_MAX_USD:
             continue
 
         rows.append((sym, vol_q))
 
-    # Ordenar por volume e cortar
     rows.sort(key=lambda x: x[1], reverse=True)
     selected = [sym for sym, _ in rows[:top_n]]
     
     if DEBUG_MODE:
-        print(f"[DEBUG] Selecionados {len(selected)} pares: {selected[:10]}...")
+        print(f"[DEBUG] Selecionados {len(selected)} pares: {selected[:8]}...")
     
     return selected
 
@@ -208,10 +228,10 @@ def fetch_ohlcv_safe(ex, symbol, timeframe, limit):
         return None
 
 # =========================
-#   DETECÇÃO DE MANIPULAÇÃO
+#   DETECÇÃO MELHORADA
 # =========================
 def detect_pump_pattern(ohlcv):
-    """Detecta padrões de pump específicos da Binance"""
+    """Detecta padrões de pump"""
     if len(ohlcv) < 10:
         return False, None, {}
     
@@ -219,22 +239,22 @@ def detect_pump_pattern(ohlcv):
     volumes = [c[5] for c in last_10]
     prices = [c[4] for c in last_10]
     
-    # Padrão 1: Volume crescente + preço crescente
+    # Padrão accumulation
     vol_trend = sum(volumes[-3:]) / sum(volumes[:3]) if sum(volumes[:3]) > 0 else 0
     price_change = (prices[-1] - prices[0]) / prices[0] if prices[0] > 0 else 0
     
-    if vol_trend > 3 and price_change > 0.05:
+    if vol_trend > 4 and price_change > 0.08:  # Mais restritivo
         return True, "ACCUMULATION_PUMP", {
             "vol_trend": vol_trend,
             "price_change": price_change,
-            "confidence": "HIGH" if vol_trend > 5 else "MEDIUM"
+            "confidence": "HIGH" if vol_trend > 6 else "MEDIUM"
         }
     
-    # Padrão 2: Spike súbito
+    # Padrão coordinated
     max_vol = max(volumes)
     avg_vol = sum(volumes[:-1]) / len(volumes[:-1]) if len(volumes) > 1 else 0
     
-    if avg_vol > 0 and max_vol > 5 * avg_vol and price_change > 0.03:
+    if avg_vol > 0 and max_vol > 8 * avg_vol and price_change > 0.05:  # Mais restritivo
         return True, "COORDINATED_PUMP", {
             "vol_spike": max_vol / avg_vol,
             "price_change": price_change,
@@ -244,37 +264,65 @@ def detect_pump_pattern(ohlcv):
     return False, None, {}
 
 def calculate_risk_score(volume_mult, price_change, rsi, market_cap_usd):
-    """Calcula risk score de 1-10 para a manipulação"""
+    """🚨 RISK SCORE MELHORADO (1-10)"""
     score = 0
     
-    # Volume spike severity
+    # Volume severity (0-4)
     if volume_mult > 20: score += 4
-    elif volume_mult > 10: score += 3
-    elif volume_mult > 5: score += 2
-    elif volume_mult > 3: score += 1
+    elif volume_mult > 15: score += 3
+    elif volume_mult > 10: score += 2
+    elif volume_mult > 5: score += 1
     
-    # Price movement
+    # Price movement (0-3)
     abs_change = abs(price_change)
-    if abs_change > 0.2: score += 3
-    elif abs_change > 0.1: score += 2
-    elif abs_change > 0.05: score += 1
+    if abs_change > 0.25: score += 3      # >25%
+    elif abs_change > 0.15: score += 2    # >15%
+    elif abs_change > 0.08: score += 1    # >8%
     
-    # RSI extremes
+    # RSI context (0-2)
     if rsi is not None:
         try:
             rsi_val = float(rsi)
-            if rsi_val > 85 or rsi_val < 15: score += 2
-            elif rsi_val > 75 or rsi_val < 25: score += 1
+            # Para pumps: RSI muito alto = risco de dump
+            # Para dumps: RSI muito baixo = oportunidade
+            if price_change > 0:  # Pump
+                if 60 <= rsi_val <= 75: score += 2  # Sweet spot
+                elif 50 <= rsi_val <= 85: score += 1
+            else:  # Dump
+                if rsi_val < 25: score += 2  # Oversold opportunity
+                elif rsi_val < 40: score += 1
         except:
             pass
     
-    # Market cap
-    if market_cap_usd < 5_000_000: score += 1
+    # Market cap sweet spot (0-1)
+    if 2_000_000 <= market_cap_usd <= 15_000_000: score += 1
     
     return min(score, 10)
 
+def get_pump_stage(rsi, price_change_pct, volume_mult):
+    """🎯 NOVO: Determina o estágio do pump"""
+    if rsi is None:
+        return "UNKNOWN"
+    
+    try:
+        rsi_val = float(rsi)
+        abs_change = abs(price_change_pct)
+        
+        if rsi_val < 60 and abs_change < 15 and volume_mult > 5:
+            return "EARLY_PUMP"      # Bom para entry
+        elif 60 <= rsi_val <= 80 and abs_change < 25:
+            return "MID_PUMP"        # Monitor closely
+        elif rsi_val > 80 or abs_change > 30:
+            return "LATE_PUMP"       # Warning - prepare exit
+        elif rsi_val < 30 and price_change_pct < -10:
+            return "DUMP_PHASE"      # Exit / Short opportunity
+        else:
+            return "UNKNOWN"
+    except:
+        return "UNKNOWN"
+
 # =========================
-#   STOP HUNTING DETECTOR
+#   STOP HUNTING
 # =========================
 def candle_parts(c):
     o, h, l, cl, v = c[1], c[2], c[3], c[4], c[5]
@@ -285,7 +333,7 @@ def candle_parts(c):
     return o, h, l, cl, v, rng, body, upper, lower
 
 def detect_stop_hunt(ohlcv):
-    """Detecta stop hunting"""
+    """Stop hunting detection (mais restritivo)"""
     if len(ohlcv) < max(LOOKBACK, 3):
         return False, None, {}
 
@@ -296,11 +344,9 @@ def detect_stop_hunt(ohlcv):
     vol_avg = sum(vols)/len(vols) if vols else 0.0
     vol_ok = (not SH_USE_VOLUME) or (vol_avg > 0 and v >= SH_VOL_MULT * vol_avg)
 
-    # Retracções
     retrace_from_low = (cl - l) / rng if rng > 0 else 0.0
     retrace_from_high = (h - cl) / rng if rng > 0 else 0.0
 
-    # Condições
     cond_down = (lower >= SH_WICK_BODY_RATIO * body) and (lower >= SH_WICK_RANGE_PCT * rng)
     cond_up = (upper >= SH_WICK_BODY_RATIO * body) and (upper >= SH_WICK_RANGE_PCT * rng)
 
@@ -319,7 +365,7 @@ def detect_stop_hunt(ohlcv):
     return found, side, info
 
 # =========================
-#   ALERTAS
+#   ALERTAS COM FILTROS
 # =========================
 last_alert_ts = defaultdict(lambda: 0.0)
 
@@ -330,54 +376,85 @@ def can_alert(key: str, now_ts: float) -> bool:
         return True
     return False
 
-def send_manipulation_alert(symbol, alert_type, data):
-    """Alerta específico para manipulações - VERSÃO SEGURA"""
+def should_send_alert(risk_score, confidence):
+    """🚨 NOVO: Filtros de qualidade antes de enviar alert"""
+    
+    # Risk score filter
+    if risk_score < MIN_RISK_SCORE:
+        if DEBUG_MODE:
+            print(f"[FILTER] Risk score {risk_score} < {MIN_RISK_SCORE} - skipped")
+        return False
+    
+    # Confidence filter
+    if HIGH_CONFIDENCE_ONLY and confidence != "HIGH":
+        if DEBUG_MODE:
+            print(f"[FILTER] Confidence {confidence} não é HIGH - skipped")
+        return False
+    
+    # Timing filter
+    if not is_alert_hour():
+        if DEBUG_MODE:
+            print(f"[FILTER] Fora do horário de alertas - skipped")
+        return False
+    
+    return True
+
+def send_enhanced_alert(symbol, alert_type, data):
+    """🚨 ALERTAS MELHORADOS com staging e targets"""
+    
+    risk_score = data.get('risk_score', 0)
     confidence = data.get('confidence', 'MEDIUM')
+    
+    # Aplicar filtros de qualidade
+    if not should_send_alert(risk_score, confidence):
+        return
+    
     price_change = data.get('price_change', 0)
     volume_mult = data.get('volume_multiple', 0)
-    risk_score = data.get('risk_score', 0)
     rsi = data.get('rsi')
+    pump_stage = data.get('pump_stage', 'UNKNOWN')
     
-    # Emojis por tipo
-    emoji_map = {
-        'VOLUME_SPIKE': '🚀' if confidence == 'HIGH' else '⚡',
-        'ACCUMULATION_PUMP': '🔥',
-        'COORDINATED_PUMP': '💥',
-        'DUMP_WARNING': '🔴',
+    # Emojis e cores por stage
+    stage_emojis = {
+        'EARLY_PUMP': '🚀',
+        'MID_PUMP': '⚡',
+        'LATE_PUMP': '⚠️',
+        'DUMP_PHASE': '🔴',
+        'VOLUME_SPIKE': '💥',
         'STOP_HUNT': '🩸'
     }
     
-    emoji = emoji_map.get(alert_type, '⚠️')
+    emoji = stage_emojis.get(pump_stage, stage_emojis.get(alert_type, '⚠️'))
     
-    # Formatação SEGURA do RSI
+    # Formatação segura
     rsi_text = safe_rsi_format(rsi)
     
-    msg = f"""{emoji} <b>BINANCE MANIPULATION DETECTED</b>
-━━━━━━━━━━━━━━━━━━━━━━━━━━
+    msg = f"""{emoji} <b>BINANCE SIGNAL</b>
+━━━━━━━━━━━━━━━━━━━━━━
 
 <b>Par:</b> {symbol}
-<b>Tipo:</b> {alert_type}
-<b>Risk Score:</b> {risk_score}/10
-<b>Confiança:</b> {confidence}
+<b>Stage:</b> {pump_stage or alert_type}
+<b>Quality:</b> {risk_score}/10 ({confidence})
 
-<b>📊 Métricas:</b>
-• Preço: {price_change:+.2f}%
-• Volume: {volume_mult:.1f}x média
-• Timeframe: {TIMEFRAME}
-• Hora: {datetime.now(timezone.utc).strftime('%H:%M:%S UTC')}
-• RSI: {rsi_text}"""
+<b>📊 Metrics:</b>
+• Price: {price_change:+.1f}%
+• Volume: {volume_mult:.1f}x
+• RSI: {rsi_text}
+• Time: {datetime.now(timezone.utc).strftime('%H:%M UTC')}"""
 
-    # Recomendação baseada no tipo
-    if alert_type == 'ACCUMULATION_PUMP':
-        msg += "\n\n<b>💡 Recomendação:</b> 🟢 Possível ENTRY zone"
-    elif alert_type == 'DUMP_WARNING':
-        msg += "\n\n<b>💡 Recomendação:</b> 🔴 DUMP risk - Monitor exits"
-    elif alert_type == 'COORDINATED_PUMP':
-        msg += "\n\n<b>💡 Recomendação:</b> 🟡 Quick pump - Cuidado"
+    # Recomendações por stage
+    if pump_stage == 'EARLY_PUMP':
+        msg += f"\n\n<b>💡 Action:</b> 🟢 ENTRY ZONE\n• Target: +25-40%\n• Stop: -8%"
+    elif pump_stage == 'MID_PUMP':
+        msg += f"\n\n<b>💡 Action:</b> 🟡 MONITOR\n• Take some profit\n• Trail stop"
+    elif pump_stage == 'LATE_PUMP':
+        msg += f"\n\n<b>💡 Action:</b> 🔴 EXIT WARNING\n• Prepare to exit\n• Very risky entry"
+    elif pump_stage == 'DUMP_PHASE':
+        msg += f"\n\n<b>💡 Action:</b> 🔴 DUMP ACTIVE\n• Exit immediately\n• Short opportunity"
     
-    # Link direto para Binance
+    # Link
     binance_symbol = symbol.replace('/', '')
-    msg += f"\n\n<b>🔗 Binance:</b> https://www.binance.com/en/trade/{binance_symbol}"
+    msg += f"\n\n<b>🔗 Trade:</b> binance.com/trade/{binance_symbol}"
     
     send_telegram(msg)
 
@@ -385,9 +462,9 @@ def send_manipulation_alert(symbol, alert_type, data):
 #   MAIN LOOP
 # =========================
 def main():
-    print("🚀 Iniciando bot OPTIMIZADO para detectar manipulações na Binance...")
+    print("🎯 Bot CONCLUSIVO para Pumps/Dumps - Quality over Quantity!")
+    print(f"📊 Filtros ativos: Risk Score ≥{MIN_RISK_SCORE}, Price Change ≥{MIN_PRICE_CHANGE*100:.0f}%")
     
-    # Instanciar Binance
     exchanges = {}
     watchlist = {}
 
@@ -400,20 +477,16 @@ def main():
             exchanges[name] = ex
             syms = pick_symbols_by_24h_volume(ex, TOP_N_BY_VOLUME, QUOTE_FILTER)
             watchlist[name] = syms
-            print(f"[{name}] 📊 Monitorizando {len(syms)} pares")
-            if DEBUG_MODE:
-                print(f"[{name}] Exemplos: {syms[:8]}")
+            print(f"[{name}] 📊 Monitorizando {len(syms)} pares de qualidade")
         except Exception as e:
             print(f"[{name}] ❌ Falha: {e}")
 
     if not exchanges:
         raise SystemExit("❌ Nenhuma exchange configurada.")
 
-    send_telegram("✅ Bot de MANIPULAÇÃO BINANCE iniciado!\n🎯 Foco: Small/micro caps\n⏱️ Timeframe: 1m\n🔍 Threshold: 3x volume")
+    send_telegram(f"✅ Bot CONCLUSIVO iniciado!\n🎯 Target: 10-20 alertas/dia\n📊 Min Risk Score: {MIN_RISK_SCORE}/10\n💥 Min Price Change: {MIN_PRICE_CHANGE*100:.0f}%")
 
-    print(f"🔄 Loop iniciado - scan a cada {SLEEP_SECONDS}s")
-    if DEBUG_MODE:
-        print("🐛 DEBUG MODE ativo - logs detalhados")
+    print(f"🔄 Loop: scan a cada {SLEEP_SECONDS}s, cooldown {COOLDOWN_MINUTES}min")
 
     while True:
         loop_start = time.time()
@@ -423,7 +496,6 @@ def main():
             
             for sym in symbols:
                 try:
-                    # Buscar dados para análise
                     ohlcv = fetch_ohlcv_safe(ex, sym, TIMEFRAME, limit=LOOKBACK + 15)
                     if not ohlcv or len(ohlcv) < LOOKBACK + 1:
                         continue
@@ -434,86 +506,95 @@ def main():
                     vol_last = last[5]
                     close_last = last[4]
 
-                    # Calcular múltiplo de volume
                     vol_multiple = vol_last / vol_avg if vol_avg > 0 else 0
                     
-                    # Preço change
                     price_change = 0
                     if len(hist) > 0:
                         prev_close = hist[-1][4]
                         price_change = (close_last - prev_close) / prev_close if prev_close > 0 else 0
 
-                    # RSI - VERSÃO SEGURA
+                    # 🚨 FILTRO DE PRICE CHANGE
+                    if abs(price_change) < MIN_PRICE_CHANGE:
+                        continue  # Skip se movimento muito pequeno
+
                     prices = [c[4] for c in ohlcv]
                     rsi = calculate_rsi(prices, RSI_PERIOD)
-
-                    # Market cap estimate
                     market_cap_est = close_last * 1_000_000
 
-                    # DEBUG logs - VERSÃO SEGURA
-                    if DEBUG_MODE and vol_multiple > 2:
-                        rsi_display = safe_rsi_format(rsi)
-                        print(f"[DEBUG] {sym}: {vol_multiple:.1f}x volume, preço {price_change:+.2f}%, RSI {rsi_display}")
+                    # Calcular risk score
+                    risk_score = calculate_risk_score(vol_multiple, price_change, rsi, market_cap_est)
+                    
+                    # 🚨 FILTRO DE RISK SCORE
+                    if risk_score < MIN_RISK_SCORE:
+                        continue  # Skip alertas de baixa qualidade
 
-                    # ---------- ALERTA 1: VOLUME SPIKE ----------
+                    pump_stage = get_pump_stage(rsi, price_change * 100, vol_multiple)
+
+                    if DEBUG_MODE and vol_multiple > 3:
+                        rsi_display = safe_rsi_format(rsi)
+                        print(f"[DEBUG] {sym}: {vol_multiple:.1f}x, {price_change:+.1f}%, RSI {rsi_display}, Risk {risk_score}/10, Stage {pump_stage}")
+
+                    # ---------- VOLUME SPIKE ----------
                     if vol_avg > 0 and vol_multiple >= THRESHOLD:
-                        risk_score = calculate_risk_score(vol_multiple, price_change, rsi, market_cap_est)
-                        
                         key = f"SPIKE:{name}:{sym}"
                         if can_alert(key, time.time()):
-                            send_manipulation_alert(sym, "VOLUME_SPIKE", {
+                            send_enhanced_alert(sym, "VOLUME_SPIKE", {
                                 "volume_multiple": vol_multiple,
                                 "price_change": price_change * 100,
                                 "risk_score": risk_score,
                                 "rsi": rsi,
-                                "confidence": "HIGH" if vol_multiple > 10 else "MEDIUM"
+                                "pump_stage": pump_stage,
+                                "confidence": "HIGH" if vol_multiple > 15 else "MEDIUM"
                             })
 
-                    # ---------- ALERTA 2: PUMP PATTERNS ----------
+                    # ---------- PUMP PATTERNS ----------
                     pump_found, pump_type, pump_data = detect_pump_pattern(ohlcv)
                     if pump_found:
                         key = f"PUMP:{pump_type}:{name}:{sym}"
                         if can_alert(key, time.time()):
-                            risk_score = calculate_risk_score(vol_multiple, price_change, rsi, market_cap_est)
-                            send_manipulation_alert(sym, pump_type, {
+                            send_enhanced_alert(sym, pump_type, {
                                 "volume_multiple": vol_multiple,
                                 "price_change": price_change * 100,
                                 "risk_score": risk_score,
                                 "rsi": rsi,
+                                "pump_stage": pump_stage,
                                 "confidence": pump_data.get("confidence", "MEDIUM")
                             })
 
-                    # ---------- ALERTA 3: DUMP WARNING ----------
+                    # ---------- RSI EXTREMES ----------
                     if rsi is not None:
                         try:
                             rsi_val = float(rsi)
-                            if rsi_val > 80 and vol_multiple > 2:
-                                key = f"DUMP:{name}:{sym}"
+                            if (rsi_val > RSI_OVERBOUGHT and vol_multiple > 3) or (rsi_val < RSI_OVERSOLD and vol_multiple > 2):
+                                alert_type = "DUMP_WARNING" if rsi_val > RSI_OVERBOUGHT else "OVERSOLD_BOUNCE"
+                                key = f"RSI:{alert_type}:{name}:{sym}"
                                 if can_alert(key, time.time()):
-                                    risk_score = calculate_risk_score(vol_multiple, price_change, rsi, market_cap_est)
-                                    send_manipulation_alert(sym, "DUMP_WARNING", {
+                                    send_enhanced_alert(sym, alert_type, {
                                         "volume_multiple": vol_multiple,
                                         "price_change": price_change * 100,
                                         "risk_score": risk_score,
                                         "rsi": rsi,
-                                        "confidence": "HIGH"
+                                        "pump_stage": pump_stage,
+                                        "confidence": "HIGH" if abs(rsi_val - 50) > 35 else "MEDIUM"
                                     })
                         except:
                             pass
 
-                    # ---------- ALERTA 4: STOP HUNTING ----------
+                    # ---------- STOP HUNTING ----------
                     sh_found, sh_side, sh = detect_stop_hunt(ohlcv)
                     if sh_found:
                         key = f"STOPHUNT:{sh_side}:{name}:{sym}"
                         if can_alert(key, time.time()):
-                            send_manipulation_alert(sym, "STOP_HUNT", {
-                                "side": sh_side,
-                                "volume_multiple": sh.get('vol_mult', 0),
-                                "price_change": price_change * 100,
-                                "risk_score": calculate_risk_score(sh.get('vol_mult', 0), price_change, rsi, market_cap_est),
-                                "rsi": rsi,
-                                "confidence": "MEDIUM"
-                            })
+                            sh_risk = calculate_risk_score(sh.get('vol_mult', 0), price_change, rsi, market_cap_est)
+                            if sh_risk >= MIN_RISK_SCORE:  # Aplicar filtro também
+                                send_enhanced_alert(sym, "STOP_HUNT", {
+                                    "volume_multiple": sh.get('vol_mult', 0),
+                                    "price_change": price_change * 100,
+                                    "risk_score": sh_risk,
+                                    "rsi": rsi,
+                                    "pump_stage": "STOP_HUNT",
+                                    "confidence": "MEDIUM"
+                                })
 
                 except ccxt.NetworkError:
                     continue
@@ -522,7 +603,6 @@ def main():
                         print(f"[ERROR] {name} {sym}: {e}")
                     continue
 
-        # Pausa
         elapsed = time.time() - loop_start
         sleep_time = max(0, SLEEP_SECONDS - elapsed)
         time.sleep(sleep_time)
@@ -531,7 +611,7 @@ if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
-        print("\n👋 Bot encerrado pelo utilizador.")
+        print("\n👋 Bot encerrado.")
     except Exception as e:
         print(f"❌ Erro fatal: {e}")
         send_telegram(f"❌ Bot crashed: {e}")
