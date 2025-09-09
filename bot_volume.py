@@ -291,7 +291,7 @@ if __name__ == "__main__":
         error_msg = f"❌ Bot crashed: {e}"
         print(error_msg)
         send_telegram(error_msg)
-        raise"[Telegram] Falha: {e}")
+        print"[Telegram] Falha: {e}")
 
 def ts_iso(ts_ms: int) -> str:
     return datetime.fromtimestamp(ts_ms/1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
