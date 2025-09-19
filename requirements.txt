@@ -4,6 +4,9 @@
 ccxt>=4.3.0
 requests>=2.31.0
 python-dotenv>=1.0.0
-
-# Adicionar para o bot optimizado
 numpy>=1.21.0
+pandas>=1.5.0
+scikit-learn>=1.3.0
+joblib>=1.2.0
+aiofiles>=23.1.0
+asyncio-throttle>=1.0.2
