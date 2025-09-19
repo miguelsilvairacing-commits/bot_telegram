@@ -1,685 +1,670 @@
-# bot_volume_clean.py - VERSÃO SEM ERROS
+# enhanced_bot_main.py - Complete AI-Enhanced Trading Bot
 import os
 import time
-import math
+import asyncio
+from datetime import datetime, timezone, timedelta
+from typing import Dict, List, Optional
+import json
+import numpy as np
 from collections import defaultdict
-from datetime import datetime, timezone
+
+# Import configuration
+try:
+    from config import Config
+except ImportError:
+    print("⚠️ config.py not found, using environment variables directly")
+    Config = None
+
+# Import our custom modules
+from database import PatternDatabase
+from historical_collector import HistoricalCollector
+from pattern_engine import PatternEngine
+from ml_models import MLModelManager
+
+# Original bot imports
 import requests
 import ccxt
-import numpy as np
+import math
 
-# =========================
-#   CONFIGURAÇÃO
-# =========================
-EXCHANGES = os.getenv("EXCHANGES", "binance,bingx").split(",")
-QUOTE_FILTER = os.getenv("QUOTE_FILTER", "USDT").split(",")
-
-QV24H_MIN_USD = float(os.getenv("QV24H_MIN_USD", "200000"))
-QV24H_MAX_USD = float(os.getenv("QV24H_MAX_USD", "20000000"))
-
-SYMBOLS_BLACKLIST = set([
-    "BTC/USDT", "ETH/USDT", "BNB/USDT", "ADA/USDT", "SOL/USDT", 
-    "DOT/USDT", "AVAX/USDT", "MATIC/USDT", "LINK/USDT", "UNI/USDT",
-    "LTC/USDT", "BCH/USDT", "XRP/USDT", "DOGE/USDT", "ATOM/USDT"
-] + [s.strip() for s in os.getenv("SYMBOLS_BLACKLIST", "").split(",") if s.strip()])
-
-TOP_N_BY_VOLUME = int(os.getenv("TOP_N_BY_VOLUME", "30"))
-TIMEFRAME = os.getenv("TIMEFRAME", "1m")
-LOOKBACK = int(os.getenv("LOOKBACK", "8"))
-THRESHOLD = float(os.getenv("THRESHOLD", "3.0"))
-
-MIN_RISK_SCORE = int(os.getenv("MIN_RISK_SCORE", "4"))
-MIN_PRICE_CHANGE = float(os.getenv("MIN_PRICE_CHANGE", "0.04"))
-HIGH_CONFIDENCE_ONLY = os.getenv("HIGH_CONFIDENCE_ONLY", "false").lower() == "true"
-
-RSI_PERIOD = int(os.getenv("RSI_PERIOD", "14"))
-RSI_OVERBOUGHT = float(os.getenv("RSI_OVERBOUGHT", "80"))
-RSI_OVERSOLD = float(os.getenv("RSI_OVERSOLD", "20"))
-
-SH_WICK_BODY_RATIO = float(os.getenv("SH_WICK_BODY_RATIO", "2.0"))
-SH_WICK_RANGE_PCT = float(os.getenv("SH_WICK_RANGE_PCT", "0.5"))
-SH_MIN_RETRACE_PCT = float(os.getenv("SH_MIN_RETRACE_PCT", "0.4"))
-SH_USE_VOLUME = os.getenv("SH_USE_VOLUME", "true").lower() == "true"
-SH_VOL_MULT = float(os.getenv("SH_VOL_MULT", "3.0"))
-
-SLEEP_SECONDS = int(os.getenv("SLEEP_SECONDS", "30"))
-COOLDOWN_MINUTES = int(os.getenv("COOLDOWN_MINUTES", "25"))
-
-ALERT_HOURS_STR = os.getenv("ALERT_HOURS", "")
-ALERT_HOURS = [int(x.strip()) for x in ALERT_HOURS_STR.split(",") if x.strip()] if ALERT_HOURS_STR else []
-WEEKEND_QUIET_MODE = os.getenv("WEEKEND_QUIET_MODE", "false").lower() == "true"
-
-DEBUG_MODE = os.getenv("DEBUG_MODE", "true").lower() == "true"
-TG_TOKEN = os.getenv("TG_TOKEN", "")
-TG_CHAT_ID = os.getenv("TG_CHAT_ID", "")
-
-# =========================
-#   UTILITÁRIOS
-# =========================
-def send_telegram(msg: str):
-    if not TG_TOKEN or not TG_CHAT_ID:
-        print("[Telegram] Não configurado. Mensagem seria:")
-        print(msg)
-        return
-    try:
-        requests.post(
-            f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
-            json={"chat_id": TG_CHAT_ID, "text": msg, "parse_mode": "HTML", "disable_web_page_preview": True},
-            timeout=20
-        )
-    except Exception as e:
-        print(f"[Telegram] Falha: {e}")
-
-def short_num(x: float) -> str:
-    if x is None or math.isnan(x):
-        return "-"
-    for unit in ["","K","M","B","T","P"]:
-        if abs(x) < 1000.0:
-            return f"{x:,.2f}{unit}"
-        x /= 1000.0
-    return f"{x:.2f}E"
-
-def build_exchange(name: str):
-    name = name.strip().lower()
-    if not hasattr(ccxt, name):
-        raise ValueError(f"Exchange '{name}' não existe no CCXT.")
+class EnhancedTradingBot:
+    """
+    Complete AI-enhanced trading bot with historical analysis and ML predictions
+    """
     
-    config = {
-        "enableRateLimit": True,
-        "options": {"adjustForTimeDifference": True}
-    }
-    
-    if name == "bingx":
-        config.update({
-            "timeout": 30000,
-            "rateLimit": 2000,
-            "options": {
-                "adjustForTimeDifference": True,
-                "recvWindow": 60000,
+    def __init__(self):
+        # Configuration - use Config class if available, otherwise env vars
+        if Config:
+            self.exchanges_list = Config.EXCHANGES
+            self.quote_filter = Config.QUOTE_FILTER
+            self.top_n_by_volume = Config.TOP_N_BY_VOLUME
+            self.timeframe = Config.TIMEFRAME
+            self.lookback = Config.LOOKBACK
+            self.threshold = Config.THRESHOLD
+            self.min_risk_score = Config.MIN_RISK_SCORE
+            self.min_price_change = Config.MIN_PRICE_CHANGE
+            self.sleep_seconds = Config.SLEEP_SECONDS
+            self.cooldown_minutes = Config.COOLDOWN_MINUTES
+            self.debug_mode = Config.DEBUG_MODE
+            self.ai_mode = Config.AI_MODE
+            self.pattern_analysis = Config.PATTERN_ANALYSIS
+            self.ml_predictions = Config.ML_PREDICTIONS
+            self.market_manipulation_detection = Config.MANIPULATION_DETECTION
+            self.tg_token = Config.TG_TOKEN
+            self.tg_chat_id = Config.TG_CHAT_ID
+            self.historical_days = Config.HISTORICAL_DAYS
+            self.auto_collect_historical = Config.AUTO_COLLECT_HISTORICAL
+        else:
+            # Fallback to environment variables
+            self.exchanges_list = os.getenv("EXCHANGES", "binance,bingx").split(",")
+            self.quote_filter = os.getenv("QUOTE_FILTER", "USDT").split(",")
+            self.top_n_by_volume = int(os.getenv("TOP_N_BY_VOLUME", "30"))
+            self.timeframe = os.getenv("TIMEFRAME", "1m")
+            self.lookback = int(os.getenv("LOOKBACK", "8"))
+            self.threshold = float(os.getenv("THRESHOLD", "3.0"))
+            self.min_risk_score = int(os.getenv("MIN_RISK_SCORE", "4"))
+            self.min_price_change = float(os.getenv("MIN_PRICE_CHANGE", "0.04"))
+            self.sleep_seconds = int(os.getenv("SLEEP_SECONDS", "30"))
+            self.cooldown_minutes = int(os.getenv("COOLDOWN_MINUTES", "25"))
+            self.debug_mode = os.getenv("DEBUG_MODE", "false").lower() == "true"
+            self.ai_mode = os.getenv("AI_MODE", "true").lower() == "true"
+            self.pattern_analysis = os.getenv("PATTERN_ANALYSIS", "true").lower() == "true"
+            self.ml_predictions = os.getenv("ML_PREDICTIONS", "true").lower() == "true"
+            self.market_manipulation_detection = os.getenv("MANIPULATION_DETECTION", "true").lower() == "true"
+            self.tg_token = os.getenv("TG_TOKEN", "")
+            self.tg_chat_id = os.getenv("TG_CHAT_ID", "")
+            self.historical_days = int(os.getenv("HISTORICAL_DAYS", "30"))
+            self.auto_collect_historical = os.getenv("AUTO_COLLECT_HISTORICAL", "true").lower() == "true"
+        
+        # Exchange configurations
+        self.exchanges_config = {
+            'binance': {
+                'enableRateLimit': True,
+                'timeout': 20000,
+                'options': {'adjustForTimeDifference': True}
+            },
+            'bingx': {
+                'enableRateLimit': True,
+                'timeout': 30000,
+                'rateLimit': 2000,
+                'options': {
+                    'adjustForTimeDifference': True,
+                    'recvWindow': 60000,
+                }
             }
-        })
-        print("[BingX] Configuração específica aplicada")
+        }
         
-    ex = getattr(ccxt, name)(config)
+        self.exchanges = {}
+        self.watchlist = {}
+        
+        # Core components
+        self.db = PatternDatabase()
+        self.pattern_engine = PatternEngine(self.db)
+        self.ml_manager = MLModelManager(self.db)
+        
+        # Alert cooldowns
+        self.last_alert_ts = defaultdict(lambda: 0.0)
+        
+        # Market events buffer for manipulation detection
+        self.recent_events = []
+        self.max_events_buffer = 100
+        
+        # Performance tracking
+        self.stats = {
+            'alerts_sent': 0,
+            'pumps_detected': 0,
+            'patterns_matched': 0,
+            'ml_predictions_made': 0,
+            'manipulation_detected': 0,
+            'start_time': time.time()
+        }
+        
+        print("🚀 Enhanced Trading Bot initialized with AI capabilities")
+        if self.debug_mode:
+            print(f"🔧 Debug mode enabled")
+            print(f"🤖 AI mode: {self.ai_mode}")
+            print(f"📊 Pattern analysis: {self.pattern_analysis}")
+            print(f"🧠 ML predictions: {self.ml_predictions}")
     
-    try:
-        print(f"[{name}] Carregando mercados...")
-        ex.load_markets()
-        market_count = len(ex.markets) if hasattr(ex, 'markets') else 0
-        print(f"[{name}] ✅ {market_count} mercados carregados")
-    except Exception as e:
-        print(f"[{name}] ❌ Erro: {e}")
-        raise
-    
-    return ex
-
-def safe_rsi_format(rsi_value):
-    if rsi_value is None:
-        return "N/A"
-    try:
-        return f"{float(rsi_value):.1f}"
-    except:
-        return "N/A"
-
-def calculate_rsi(prices, period=14):
-    try:
-        if not prices or len(prices) < period + 1:
-            return None
+    def send_telegram(self, msg: str):
+        """Send message to Telegram"""
+        if not self.tg_token or not self.tg_chat_id:
+            if self.debug_mode:
+                print("[Telegram] Not configured. Message would be:")
+                print(msg[:500] + "..." if len(msg) > 500 else msg)
+            return
         
-        clean_prices = []
-        for p in prices[-(period+1):]:
-            try:
-                clean_prices.append(float(p))
-            except:
-                continue
-        
-        if len(clean_prices) < period + 1:
-            return None
-        
-        prices_array = np.array(clean_prices)
-        deltas = np.diff(prices_array)
-        gains = np.where(deltas > 0, deltas, 0)
-        losses = np.where(deltas < 0, -deltas, 0)
-        
-        avg_gain = np.mean(gains[-period:])
-        avg_loss = np.mean(losses[-period:])
-        
-        if avg_loss == 0:
-            return 100.0
-        
-        rs = avg_gain / avg_loss
-        rsi = 100.0 - (100.0 / (1.0 + rs))
-        return float(rsi)
-        
-    except Exception as e:
-        if DEBUG_MODE:
-            print(f"[DEBUG] Erro RSI: {e}")
-        return None
-
-def is_alert_hour():
-    if not ALERT_HOURS:
-        return True
-    
-    utc_now = datetime.now(timezone.utc)
-    current_hour = utc_now.hour
-    
-    if WEEKEND_QUIET_MODE and utc_now.weekday() >= 5:
-        return current_hour in [8, 9, 14, 15, 22]
-    
-    return current_hour in ALERT_HOURS
-
-# =========================
-#   FETCH OHLCV
-# =========================
-def fetch_ohlcv_safe(ex, symbol, timeframe, limit):
-    max_retries = 3
-    
-    for attempt in range(max_retries):
         try:
-            if ex.id.lower() == 'bingx':
-                actual_limit = min(limit, 100)
-                result = ex.fetch_ohlcv(symbol, timeframe=timeframe, limit=actual_limit)
-                return result
+            response = requests.post(
+                f"https://api.telegram.org/bot{self.tg_token}/sendMessage",
+                json={
+                    "chat_id": self.tg_chat_id, 
+                    "text": msg, 
+                    "parse_mode": "HTML", 
+                    "disable_web_page_preview": True
+                },
+                timeout=20
+            )
+            
+            if response.status_code == 200:
+                if self.debug_mode:
+                    print("[Telegram] ✅ Message sent successfully")
             else:
-                return ex.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
+                print(f"[Telegram] ❌ Error {response.status_code}: {response.text}")
                 
-        except ccxt.NetworkError as e:
-            if attempt < max_retries - 1:
-                wait_time = (attempt + 1) * 3
-                if DEBUG_MODE:
-                    print(f"[DEBUG] {ex.id} {symbol}: Network retry {attempt + 1} in {wait_time}s")
-                time.sleep(wait_time)
-                continue
-            else:
+        except Exception as e:
+            print(f"[Telegram] ❌ Exception: {e}")
+    
+    def build_exchange(self, name: str):
+        """Build exchange with specific configurations"""
+        name = name.strip().lower()
+        if not hasattr(ccxt, name):
+            raise ValueError(f"Exchange '{name}' not found in ccxt")
+        
+        config = self.exchanges_config.get(name, {
+            'enableRateLimit': True,
+            'options': {'adjustForTimeDifference': True}
+        })
+        
+        ex = getattr(ccxt, name)(config)
+        
+        try:
+            ex.load_markets()
+            print(f"[{name.upper()}] ✅ {len(ex.markets)} markets loaded")
+            return ex
+        except Exception as e:
+            print(f"[{name.upper()}] ❌ Failed to load markets: {e}")
+            raise
+    
+    def calculate_rsi(self, prices: List[float], period: int = 14) -> Optional[float]:
+        """Calculate RSI for price series"""
+        try:
+            if len(prices) < period + 1:
                 return None
-                
-        except ccxt.ExchangeError as e:
-            error_str = str(e).lower()
-            if any(x in error_str for x in ["invalid symbol", "not found"]):
-                return None
-            elif "rate limit" in error_str:
+            
+            prices_array = np.array(prices[-(period+1):])
+            deltas = np.diff(prices_array)
+            gains = np.where(deltas > 0, deltas, 0)
+            losses = np.where(deltas < 0, -deltas, 0)
+            
+            avg_gain = np.mean(gains[-period:])
+            avg_loss = np.mean(losses[-period:])
+            
+            if avg_loss == 0:
+                return 100.0
+            
+            rs = avg_gain / avg_loss
+            rsi = 100.0 - (100.0 / (1.0 + rs))
+            return float(rsi)
+            
+        except Exception:
+            return None
+    
+    def fetch_ohlcv_safe(self, ex, symbol: str, timeframe: str, limit: int):
+        """Safe OHLCV fetch with retry logic"""
+        max_retries = 3
+        
+        for attempt in range(max_retries):
+            try:
+                if ex.id.lower() == 'bingx':
+                    actual_limit = min(limit, 100)
+                    return ex.fetch_ohlcv(symbol, timeframe=timeframe, limit=actual_limit)
+                else:
+                    return ex.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
+                    
+            except ccxt.NetworkError as e:
                 if attempt < max_retries - 1:
-                    wait_time = (attempt + 1) * 5
+                    wait_time = (attempt + 1) * 3
+                    if self.debug_mode:
+                        print(f"[{ex.id}] Network error for {symbol}, retry {attempt + 1} in {wait_time}s")
                     time.sleep(wait_time)
                     continue
                 else:
+                    if self.debug_mode:
+                        print(f"[{ex.id}] Max retries exceeded for {symbol}")
                     return None
-            else:
+                    
+            except ccxt.ExchangeError as e:
+                error_str = str(e).lower()
+                if "rate limit" in error_str or "too many requests" in error_str:
+                    if attempt < max_retries - 1:
+                        wait_time = (attempt + 1) * 5
+                        if self.debug_mode:
+                            print(f"[{ex.id}] Rate limit for {symbol}, wait {wait_time}s")
+                        time.sleep(wait_time)
+                        continue
+                    else:
+                        return None
+                elif any(x in error_str for x in ["invalid symbol", "not found"]):
+                    if self.debug_mode:
+                        print(f"[{ex.id}] Symbol {symbol} not found")
+                    return None
+                else:
+                    if self.debug_mode:
+                        print(f"[{ex.id}] Exchange error for {symbol}: {e}")
+                    return None
+                    
+            except Exception as e:
+                if self.debug_mode:
+                    print(f"[{ex.id}] Unexpected error for {symbol}: {e}")
                 return None
+        
+        return None
+    
+    def get_symbols_for_exchange(self, exchange_name: str, limit: int = 30) -> List[str]:
+        """Get top volume symbols for exchange"""
+        ex = self.exchanges.get(exchange_name)
+        if not ex:
+            return []
+        
+        try:
+            print(f"[{exchange_name.upper()}] Fetching tickers...")
+            tickers = ex.fetch_tickers()
+            print(f"[{exchange_name.upper()}] ✅ {len(tickers)} tickers received")
+            
+            volume_pairs = []
+            processed = 0
+            
+            for symbol, ticker in tickers.items():
+                processed += 1
                 
+                # Quote currency filter
+                if not any(symbol.endswith("/" + q) for q in self.quote_filter):
+                    continue
+                
+                # Get volume
+                if exchange_name.lower() == 'bingx':
+                    volume = ticker.get("quoteVolume") or ticker.get("info", {}).get("volume")
+                else:
+                    volume = ticker.get("quoteVolume")
+                
+                try:
+                    volume = float(volume) if volume else None
+                except:
+                    continue
+                
+                # Volume filtering based on config
+                min_vol = getattr(Config, 'QV24H_MIN_USD', 200000) if Config else float(os.getenv("QV24H_MIN_USD", "200000"))
+                max_vol = getattr(Config, 'QV24H_MAX_USD', 50000000) if Config else float(os.getenv("QV24H_MAX_USD", "50000000"))
+                
+                if volume and min_vol <= volume <= max_vol:
+                    volume_pairs.append((symbol, volume))
+            
+            # Sort by volume and take top N
+            volume_pairs.sort(key=lambda x: x[1], reverse=True)
+            selected = [symbol for symbol, _ in volume_pairs[:limit]]
+            
+            print(f"[{exchange_name.upper()}] ✅ Selected {len(selected)} symbols from {processed} processed")
+            
+            if self.debug_mode and selected:
+                print(f"[{exchange_name.upper()}] Top 5: {selected[:5]}")
+                volumes = [f"${vol:,.0f}" for _, vol in volume_pairs[:3]]
+                print(f"[{exchange_name.upper()}] Top volumes: {volumes}")
+            
+            return selected
+            
         except Exception as e:
-            if DEBUG_MODE:
-                print(f"[DEBUG] {ex.id} {symbol}: Error - {e}")
+            print(f"[{exchange_name.upper()}] ❌ Error getting symbols: {e}")
+            return []
+    
+    def can_alert(self, key: str, now_ts: float) -> bool:
+        """Check if we can send alert (cooldown logic)"""
+        last = self.last_alert_ts[key]
+        if (now_ts - last) >= self.cooldown_minutes * 60:
+            self.last_alert_ts[key] = now_ts
+            return True
+        return False
+    
+    def create_pump_fingerprint(self, ohlcv_data: List, volumes: List[float], 
+                               rsi_values: List[float], index: int) -> Dict:
+        """Create comprehensive pump fingerprint"""
+        
+        lookback = min(self.lookback, index)
+        if lookback < 5:
+            return {}
+        
+        try:
+            # Volume profile
+            vol_data = volumes[max(0, index-lookback):index+1]
+            if vol_data:
+                volume_profile = {
+                    'mean': float(np.mean(vol_data)),
+                    'std': float(np.std(vol_data)),
+                    'trend': float(np.corrcoef(range(len(vol_data)), vol_data)[0,1]) if len(vol_data) > 1 else 0,
+                    'spikes_count': int(sum(1 for v in vol_data if v > np.mean(vol_data) + 2*np.std(vol_data)))
+                }
+            else:
+                volume_profile = {}
+            
+            # Price signature
+            price_data = ohlcv_data[max(0, index-10):index+1]
+            if price_data and len(price_data) > 1:
+                closes = [c[4] for c in price_data]
+                highs = [c[2] for c in price_data]
+                lows = [c[3] for c in price_data]
+                opens = [c[1] for c in price_data]
+                
+                mean_close = np.mean(closes)
+                price_signature = {
+                    'volatility': float(np.std(closes) / mean_close) if mean_close > 0 else 0,
+                    'trend_strength': float(np.corrcoef(range(len(closes)), closes)[0,1]) if len(closes) > 1 else 0,
+                    'upper_shadows_avg': float(np.mean([
+                        (h-max(o,c))/(h-l) for o,h,l,c in zip(opens,highs,lows,closes) 
+                        if h-l > 0
+                    ])) if any(h-l > 0 for h,l in zip(highs,lows)) else 0,
+                    'green_candles_pct': float(sum(1 for o,c in zip(opens,closes) if c > o) / len(closes)) if closes else 0
+                }
+            else:
+                price_signature = {}
+            
+            # RSI journey
+            rsi_journey = rsi_values[max(0, index-10):index+1] if rsi_values else []
+            
+            return {
+                'volume_profile': volume_profile,
+                'price_signature': price_signature,
+                'rsi_journey': rsi_journey
+            }
+            
+        except Exception as e:
+            if self.debug_mode:
+                print(f"[FINGERPRINT] Error creating fingerprint: {e}")
+            return {}
+    
+    def analyze_pump_with_ai(self, symbol: str, exchange_name: str, ohlcv_data: List,
+                            volumes: List[float], current_price: float, volume_multiple: float,
+                            price_change_pct: float, rsi: Optional[float]) -> Optional[Dict]:
+        """Comprehensive AI analysis of potential pump"""
+        
+        if not self.ai_mode:
+            return None
+        
+        try:
+            # Create pump data structure
+            pump_data = {
+                'symbol': symbol,
+                'exchange': exchange_name,
+                'timestamp': datetime.now(timezone.utc).isoformat(),
+                'price': current_price,
+                'volume_multiple': volume_multiple,
+                'price_change_pct': price_change_pct,
+                'rsi': rsi,
+                'market_cap_est': current_price * 1_000_000,  # Rough estimate
+            }
+            
+            # Add fingerprint data
+            fingerprint = self.create_pump_fingerprint(ohlcv_data, volumes, [], len(ohlcv_data)-1)
+            pump_data.update(fingerprint)
+            
+            analysis_results = {}
+            
+            # Pattern matching analysis
+            if self.pattern_analysis:
+                try:
+                    pattern_matches = self.pattern_engine.find_similar_patterns(pump_data, limit=10)
+                    if pattern_matches:
+                        analysis_results['pattern_matches'] = pattern_matches
+                        self.stats['patterns_matched'] += 1
+                        
+                        if self.debug_mode:
+                            best_match = pattern_matches[0]
+                            print(f"[PATTERN] {symbol}: {len(pattern_matches)} matches, best: {best_match.similarity_score:.2f} similarity")
+                    
+                except Exception as e:
+                    if self.debug_mode:
+                        print(f"[PATTERN] Error for {symbol}: {e}")
+            
+            # ML predictions
+            if self.ml_predictions and hasattr(self.ml_manager, 'models_trained') and self.ml_manager.models_trained:
+                try:
+                    ml_predictions = self.ml_manager.get_comprehensive_prediction(pump_data, analysis_results.get('pattern_matches'))
+                    analysis_results['ml_predictions'] = ml_predictions
+                    self.stats['ml_predictions_made'] += 1
+                    
+                    if self.debug_mode:
+                        recommendation = ml_predictions.get('recommendation', {})
+                        print(f"[ML] {symbol}: {recommendation.get('action', 'UNKNOWN')} - {recommendation.get('reason', 'No reason')}")
+                    
+                except Exception as e:
+                    if self.debug_mode:
+                        print(f"[ML] Error for {symbol}: {e}")
+            
+            # Market manipulation detection
+            if self.market_manipulation_detection:
+                try:
+                    # Add current event to recent events buffer
+                    self.recent_events.append({
+                        'timestamp': pump_data['timestamp'],
+                        'symbol': symbol,
+                        'exchange': exchange_name,
+                        'volume_multiple': volume_multiple,
+                        'price_change_pct': price_change_pct,
+                        'rsi': rsi
+                    })
+                    
+                    # Keep buffer manageable
+                    if len(self.recent_events) > self.max_events_buffer:
+                        self.recent_events = self.recent_events[-self.max_events_buffer:]
+                    
+                    # Detect market regime (only if we have enough events)
+                    if len(self.recent_events) >= 5:
+                        market_regime = self.pattern_engine.detect_market_manipulation(self.recent_events)
+                        analysis_results['market_regime'] = market_regime
+                        
+                        if market_regime.manipulation_probability > 0.6:
+                            self.stats['manipulation_detected'] += 1
+                            
+                            if self.debug_mode:
+                                print(f"[MANIPULATION] Market manipulation detected: {market_regime.manipulation_probability:.2f} probability")
+                    
+                except Exception as e:
+                    if self.debug_mode:
+                        print(f"[MANIPULATION] Error: {e}")
+            
+            return analysis_results if analysis_results else None
+            
+        except Exception as e:
+            if self.debug_mode:
+                print(f"[AI_ANALYSIS] Error for {symbol}: {e}")
             return None
     
-    return None
-
-# =========================
-#   SELEÇÃO DE SÍMBOLOS
-# =========================
-def pick_symbols_by_24h_volume(ex, top_n=30, quotes=None):
-    if quotes is None:
-        quotes = QUOTE_FILTER
+    def generate_enhanced_alert(self, symbol: str, exchange_name: str, pump_data: Dict, 
+                               ai_analysis: Optional[Dict] = None) -> str:
+        """Generate enhanced alert with AI insights"""
         
-    exchange_name = ex.id.lower()
-    
-    try:
-        markets = ex.load_markets()
-        active_markets = {k: v for k, v in markets.items() if v.get('active', True)}
-            
         try:
-            print(f"[{exchange_name}] Buscando tickers...")
-            tickers = ex.fetch_tickers()
-            print(f"[{exchange_name}] ✅ {len(tickers)} tickers obtidos")
-        except Exception as e:
-            print(f"[{exchange_name}] ❌ Erro tickers: {e}")
+            # Basic metrics
+            volume_mult = pump_data.get('volume_multiple', 0)
+            price_change = pump_data.get('price_change_pct', 0)
+            rsi = pump_data.get('rsi')
+            current_price = pump_data.get('price', 0)
             
-            symbols = []
-            for s, m in active_markets.items():
-                if any(s.endswith("/" + q) for q in quotes) and s not in SYMBOLS_BLACKLIST:
-                    symbols.append(s)
+            # Exchange emoji
+            exchange_emoji = '🟡' if exchange_name.lower() == 'binance' else '🔵' if exchange_name.lower() == 'bingx' else '⚪'
             
-            return symbols[:top_n]
-
-        rows = []
-        for sym, t in tickers.items():
-            if not any(sym.endswith("/" + q) for q in quotes):
-                continue
-            if sym in SYMBOLS_BLACKLIST:
-                continue
-            if sym not in active_markets:
-                continue
-
-            vol_q = None
-            if exchange_name == 'bingx':
-                vol_q = (t.get("quoteVolume") or t.get("info", {}).get("volume"))
-            else:
-                vol_q = t.get("quoteVolume")
-            
-            try:
-                vol_q = float(vol_q) if vol_q is not None else None
-            except:
-                vol_q = None
-                
-            if vol_q is None or vol_q <= 0:
-                continue
-
-            if vol_q < QV24H_MIN_USD or vol_q > QV24H_MAX_USD:
-                continue
-
-            rows.append((sym, vol_q))
-
-        rows.sort(key=lambda x: x[1], reverse=True)
-        selected = [sym for sym, _ in rows[:top_n]]
-        
-        print(f"[{exchange_name}] ✅ {len(selected)} pares selecionados")
-        
-        if DEBUG_MODE and selected:
-            print(f"[DEBUG] {exchange_name}: Top 5: {selected[:5]}")
-        
-        return selected
-        
-    except Exception as e:
-        print(f"[ERROR] {exchange_name}: Erro seleção - {e}")
-        return []
-
-# =========================
-#   DETECÇÃO
-# =========================
-def detect_pump_pattern(ohlcv):
-    if len(ohlcv) < 8:
-        return False, None, {}
-    
-    last_8 = ohlcv[-8:]
-    volumes = [c[5] for c in last_8]
-    prices = [c[4] for c in last_8]
-    
-    recent_vol = sum(volumes[-3:])
-    early_vol = sum(volumes[:3])
-    vol_trend = recent_vol / early_vol if early_vol > 0 else 0
-    
-    price_change = (prices[-1] - prices[0]) / prices[0] if prices[0] > 0 else 0
-    
-    if vol_trend > 3 and price_change > 0.06:
-        return True, "ACCUMULATION_PUMP", {
-            "vol_trend": vol_trend,
-            "price_change": price_change,
-            "confidence": "HIGH" if vol_trend > 5 else "MEDIUM"
-        }
-    
-    max_vol = max(volumes)
-    avg_vol = sum(volumes[:-1]) / len(volumes[:-1]) if len(volumes) > 1 else 0
-    
-    if avg_vol > 0 and max_vol > 6 * avg_vol and price_change > 0.04:
-        return True, "COORDINATED_PUMP", {
-            "vol_spike": max_vol / avg_vol,
-            "price_change": price_change,
-            "confidence": "HIGH"
-        }
-    
-    return False, None, {}
-
-def calculate_risk_score(volume_mult, price_change, rsi, market_cap_usd):
-    score = 0
-    
-    if volume_mult > 15: score += 4
-    elif volume_mult > 10: score += 3
-    elif volume_mult > 6: score += 2
-    elif volume_mult > 3: score += 1
-    
-    abs_change = abs(price_change)
-    if abs_change > 0.20: score += 3
-    elif abs_change > 0.12: score += 2
-    elif abs_change > 0.06: score += 1
-    
-    if rsi is not None:
-        try:
-            rsi_val = float(rsi)
-            if price_change > 0:
-                if 50 <= rsi_val <= 75: score += 2
-                elif 40 <= rsi_val <= 80: score += 1
-            else:
-                if rsi_val < 30: score += 2
-                elif rsi_val < 45: score += 1
-        except:
-            pass
-    
-    if 500_000 <= market_cap_usd <= 15_000_000: score += 1
-    
-    return min(score, 10)
-
-def get_pump_stage(rsi, price_change_pct, volume_mult):
-    if rsi is None:
-        return "UNKNOWN"
-    
-    try:
-        rsi_val = float(rsi)
-        abs_change = abs(price_change_pct)
-        
-        if rsi_val < 60 and abs_change < 12 and volume_mult > 4:
-            return "EARLY_PUMP"
-        elif 60 <= rsi_val <= 78 and abs_change < 20:
-            return "MID_PUMP"
-        elif rsi_val > 78 or abs_change > 25:
-            return "LATE_PUMP"
-        elif rsi_val < 35 and price_change_pct < -8:
-            return "DUMP_PHASE"
-        else:
-            return "UNKNOWN"
-    except:
-        return "UNKNOWN"
-
-def candle_parts(c):
-    o, h, l, cl, v = c[1], c[2], c[3], c[4], c[5]
-    rng = max(1e-12, h - l)
-    body = abs(cl - o)
-    upper = h - max(o, cl)
-    lower = min(o, cl) - l
-    return o, h, l, cl, v, rng, body, upper, lower
-
-def detect_stop_hunt(ohlcv):
-    if len(ohlcv) < max(LOOKBACK, 3):
-        return False, None, {}
-
-    last = ohlcv[-1]
-    o, h, l, cl, v, rng, body, upper, lower = candle_parts(last)
-
-    vols = [c[5] for c in ohlcv[-(LOOKBACK+1):-1]]
-    vol_avg = sum(vols)/len(vols) if vols else 0.0
-    vol_ok = (not SH_USE_VOLUME) or (vol_avg > 0 and v >= SH_VOL_MULT * vol_avg)
-
-    retrace_from_low = (cl - l) / rng if rng > 0 else 0.0
-    retrace_from_high = (h - cl) / rng if rng > 0 else 0.0
-
-    cond_down = (lower >= SH_WICK_BODY_RATIO * body) and (lower >= SH_WICK_RANGE_PCT * rng)
-    cond_up = (upper >= SH_WICK_BODY_RATIO * body) and (upper >= SH_WICK_RANGE_PCT * rng)
-
-    found = False
-    side = None
-
-    if cond_down and (retrace_from_low >= SH_MIN_RETRACE_PCT) and vol_ok:
-        found, side = True, "down"
-    if cond_up and (retrace_from_high >= SH_MIN_RETRACE_PCT) and vol_ok:
-        found, side = True, "up"
-
-    info = {
-        "vol_mult": (v/vol_avg) if vol_avg else None,
-        "side": side
-    }
-    return found, side, info
-
-# =========================
-#   ALERTAS
-# =========================
-last_alert_ts = defaultdict(lambda: 0.0)
-
-def can_alert(key: str, now_ts: float) -> bool:
-    last = last_alert_ts[key]
-    if (now_ts - last) >= COOLDOWN_MINUTES * 60:
-        last_alert_ts[key] = now_ts
-        return True
-    return False
-
-def should_send_alert(risk_score, confidence):
-    if risk_score < MIN_RISK_SCORE:
-        return False
-    
-    if HIGH_CONFIDENCE_ONLY and confidence != "HIGH":
-        return False
-    
-    if ALERT_HOURS and not is_alert_hour():
-        return False
-    
-    return True
-
-def send_enhanced_alert(symbol, alert_type, data, exchange_name):
-    risk_score = data.get('risk_score', 0)
-    confidence = data.get('confidence', 'MEDIUM')
-    
-    if not should_send_alert(risk_score, confidence):
-        return
-    
-    price_change = data.get('price_change', 0)
-    volume_mult = data.get('volume_multiple', 0)
-    rsi = data.get('rsi')
-    pump_stage = data.get('pump_stage', alert_type)
-    
-    exchange_emojis = {
-        'binance': '🟡',
-        'bingx': '🔵'
-    }
-    
-    stage_emojis = {
-        'EARLY_PUMP': '🚀',
-        'MID_PUMP': '⚡',
-        'LATE_PUMP': '⚠️',
-        'DUMP_PHASE': '🔴',
-        'VOLUME_SPIKE': '💥',
-        'STOP_HUNT': '🩸'
-    }
-    
-    exchange_emoji = exchange_emojis.get(exchange_name.lower(), '⚪')
-    stage_emoji = stage_emojis.get(pump_stage, '⚠️')
-    
-    rsi_text = safe_rsi_format(rsi)
-    
-    msg = f"""{stage_emoji} <b>{exchange_name.upper()} SIGNAL</b> {exchange_emoji}
-━━━━━━━━━━━━━━━━━━━━━━━━━━
+            # Base alert
+            msg = f"""🚀 <b>AI-ENHANCED SIGNAL</b> {exchange_emoji}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 <b>Par:</b> {symbol}
-<b>Stage:</b> {pump_stage}
-<b>Quality:</b> {risk_score}/10 ({confidence})
+<b>Exchange:</b> {exchange_name.upper()}
+<b>Time:</b> {datetime.now(timezone.utc).strftime('%H:%M:%S UTC')}
 
-<b>📊 Metrics:</b>
-• Price: {price_change:+.1f}%
-• Volume: {volume_mult:.1f}x
-• RSI: {rsi_text}
-• Time: {datetime.now(timezone.utc).strftime('%H:%M UTC')}"""
-
-    if pump_stage == 'EARLY_PUMP':
-        msg += "\n\n<b>💡 Action:</b> 🟢 ENTRY ZONE\n• Target: +20-35%\n• Stop: -6%"
-    elif pump_stage == 'MID_PUMP':
-        msg += "\n\n<b>💡 Action:</b> 🟡 MONITOR\n• Partial profit\n• Trail stops"
-    elif pump_stage == 'LATE_PUMP':
-        msg += "\n\n<b>💡 Action:</b> 🔴 EXIT WARNING\n• Prepare exits"
-    elif pump_stage == 'DUMP_PHASE':
-        msg += "\n\n<b>💡 Action:</b> 🔴 DUMP ACTIVE\n• Exit now"
-    
-    if exchange_name.lower() == 'binance':
-        binance_symbol = symbol.replace('/', '')
-        msg += f"\n\n<b>🔗 Trade:</b> binance.com/trade/{binance_symbol}"
-    elif exchange_name.lower() == 'bingx':
-        bingx_symbol = symbol.replace('/', '-')
-        msg += f"\n\n<b>🔗 Trade:</b> bingx.com/spot/{bingx_symbol}"
-    
-    send_telegram(msg)
-
-# =========================
-#   MAIN
-# =========================
-def main():
-    print("🎯 Bot Multi-Exchange Limpo!")
-    
-    exchanges = {}
-    watchlist = {}
-
-    for name in EXCHANGES:
-        name = name.strip()
-        if not name:
-            continue
-        try:
-            print(f"\n[{name.upper()}] Inicializando...")
-            ex = build_exchange(name)
-            exchanges[name] = ex
+<b>📊 Current Metrics:</b>
+• Price: ${current_price:.6f} ({price_change:+.1f}%)
+• Volume: {volume_mult:.1f}x average
+• RSI: {rsi:.1f if rsi else 'N/A'}"""
             
-            syms = pick_symbols_by_24h_volume(ex, TOP_N_BY_VOLUME, QUOTE_FILTER)
-            watchlist[name] = syms
-            
-            if syms:
-                print(f"[{name.upper()}] ✅ {len(syms)} pares")
-            else:
-                print(f"[{name.upper()}] ⚠️ Nenhum par")
+            if ai_analysis:
+                # Pattern analysis section
+                pattern_matches = ai_analysis.get('pattern_matches', [])
+                if pattern_matches:
+                    best_match = pattern_matches[0]
+                    success_rate = getattr(best_match, 'historical_success_rate', 0) * 100
+                    msg += f"""
+
+<b>🧬 Pattern Analysis:</b>
+• Similarity: {best_match.similarity_score*100:.0f}% match
+• Historical Success: {success_rate:.0f}% ({len(pattern_matches)} patterns)
+• Risk Level: {getattr(best_match, 'risk_level', 'UNKNOWN')}
+• Confidence: {getattr(best_match, 'confidence', 'MEDIUM')}"""
                 
+                # ML predictions section
+                ml_predictions = ai_analysis.get('ml_predictions', {})
+                if ml_predictions:
+                    recommendation = ml_predictions.get('recommendation', {})
+                    risk_analysis = ml_predictions.get('risk_analysis', {})
+                    dump_timing = ml_predictions.get('dump_timing', {})
+                    
+                    msg += f"""
+
+<b>🤖 AI Predictions:</b>
+• Risk Score: {risk_analysis.get('risk_score', 'N/A')}/10
+• Risk Level: {risk_analysis.get('risk_level', 'UNKNOWN')}"""
+                    
+                    if dump_timing.get('predicted_hours'):
+                        msg += f"\n• Dump Timing: {dump_timing['predicted_hours']:.1f}h"
+                    
+                    msg += f"""
+• Action: <b>{recommendation.get('action', 'MONITOR')}</b>
+• Position: {recommendation.get('position_size', 'Unknown')}"""
+                
+                # Market manipulation warning
+                market_regime = ai_analysis.get('market_regime')
+                if market_regime and market_regime.manipulation_probability > 0.6:
+                    msg += f"""
+
+<b>⚠️ Manipulation Alert:</b>
+• Probability: {market_regime.manipulation_probability*100:.0f}%
+• Type: {market_regime.regime_type}
+• Coordinated: {'Yes' if market_regime.coordinated_activity else 'No'}"""
+                
+                # AI recommendation
+                if ml_predictions:
+                    recommendation = ml_predictions.get('recommendation', {})
+                    action = recommendation.get('action', 'MONITOR')
+                    reason = recommendation.get('reason', 'No specific reason')
+                    
+                    if action == 'BUY':
+                        msg += f"\n\n<b>💡 AI Recommendation:</b> 🟢 <b>BUY SIGNAL</b>\n• {reason}"
+                    elif action == 'AVOID':
+                        msg += f"\n\n<b>💡 AI Recommendation:</b> 🔴 <b>AVOID</b>\n• {reason}"
+                    elif action == 'CAUTIOUS_BUY':
+                        msg += f"\n\n<b>💡 AI Recommendation:</b> 🟡 <b>CAUTIOUS</b>\n• {reason}"
+                    else:
+                        msg += f"\n\n<b>💡 AI Recommendation:</b> ⚪ <b>MONITOR</b>\n• {reason}"
+                
+                # Trading guidance
+                if pattern_matches:
+                    msg += f"\n\n<b>📈 Guidance:</b>\n• Entry: Current or -2-3%\n• Target: +15-25%\n• Stop: -6-8%"
+            else:
+                msg += f"\n\n<b>🤖 AI Analysis:</b> Basic detection (AI components loading...)"
+            
+            # Link to exchange
+            if exchange_name.lower() == 'binance':
+                binance_symbol = symbol.replace('/', '')
+                msg += f"\n\n<b>🔗 Trade:</b> binance.com/trade/{binance_symbol}"
+            elif exchange_name.lower() == 'bingx':
+                bingx_symbol = symbol.replace('/', '-')
+                msg += f"\n\n<b>🔗 Trade:</b> bingx.com/spot/{bingx_symbol}"
+            
+            return msg
+            
         except Exception as e:
-            print(f"[{name.upper()}] ❌ Falha: {e}")
-            continue
+            if self.debug_mode:
+                print(f"[ALERT] Error generating alert for {symbol}: {e}")
+            
+            # Fallback basic alert
+            return f"""🚀 <b>PUMP DETECTED</b>
 
-    if not exchanges:
-        raise SystemExit("❌ Nenhuma exchange inicializada.")
+<b>Par:</b> {symbol}
+<b>Exchange:</b> {exchange_name.upper()}
+<b>Price Change:</b> {pump_data.get('price_change_pct', 0):+.1f}%
+<b>Volume:</b> {pump_data.get('volume_multiple', 0):.1f}x
 
-    active_exchanges = list(exchanges.keys())
-    total_pairs = sum(len(watchlist.get(ex, [])) for ex in active_exchanges)
+<b>🔗 Trade:</b> Check {exchange_name} for {symbol}"""
     
-    print(f"\n🚀 INICIALIZAÇÃO COMPLETA!")
-    print(f"🏦 Exchanges: {', '.join(active_exchanges)}")
-    print(f"📊 Total pares: {total_pairs}")
-    
-    send_telegram(f"✅ Bot Online!\n🏦 Exchanges: {', '.join(active_exchanges)}\n📊 Pares: {total_pairs}\n🎯 Filtros: Risk≥{MIN_RISK_SCORE}, Price≥{MIN_PRICE_CHANGE*100:.0f}%")
-
-    print("\n🔄 LOOP INICIADO...")
-
-    while True:
-        loop_start = time.time()
+    async def initialize_ai_components(self):
+        """Initialize AI components with historical data"""
         
-        for exchange_name, ex in exchanges.items():
-            symbols = watchlist.get(exchange_name, [])
+        if not self.ai_mode:
+            print("⚠️ AI mode disabled, skipping AI initialization")
+            return
+        
+        print("🧠 Initializing AI components...")
+        
+        try:
+            # Check if we have enough historical data
+            stats = self.db.get_statistics()
+            pump_events_count = stats.get('pump_events_count', 0)
             
-            if not symbols:
-                continue
+            print(f"📊 Current database: {pump_events_count} pump events")
             
-            for sym in symbols:
+            if pump_events_count < 20 and self.auto_collect_historical:
+                print(f"📊 Collecting {self.historical_days} days of historical data...")
+                
+                # Initialize historical collector
+                collector = HistoricalCollector(self.db, self.exchanges_config)
+                
+                # Get symbols to analyze (reduced for faster collection)
+                symbols_per_exchange = {}
+                for exchange_name in self.exchanges_list:
+                    exchange_name = exchange_name.strip()
+                    if exchange_name and exchange_name in self.exchanges:
+                        symbols = self.get_symbols_for_exchange(exchange_name, 15)  # Reduced for speed
+                        if symbols:
+                            symbols_per_exchange[exchange_name] = symbols
+                            print(f"[{exchange_name.upper()}] Will collect data for {len(symbols)} symbols")
+                
+                # Collect historical data (this may take 10-30 minutes)
+                if symbols_per_exchange:
+                    await collector.collect_all_historical(symbols_per_exchange)
+                    print("✅ Historical data collection completed")
+                else:
+                    print("⚠️ No symbols found for historical collection")
+            else:
+                print("✅ Sufficient historical data available")
+            
+            # Train ML models
+            if self.ml_predictions:
                 try:
-                    ohlcv = fetch_ohlcv_safe(ex, sym, TIMEFRAME, limit=LOOKBACK + 15)
-                    if not ohlcv or len(ohlcv) < LOOKBACK + 1:
-                        continue
-
-                    *hist, last = ohlcv
-                    volumes = [c[5] for c in hist[-LOOKBACK:]]
-                    vol_avg = (sum(volumes) / len(volumes)) if volumes else 0.0
-                    vol_last = last[5]
-                    close_last = last[4]
-
-                    vol_multiple = vol_last / vol_avg if vol_avg > 0 else 0
-                    
-                    price_change = 0
-                    if len(hist) > 0:
-                        prev_close = hist[-1][4]
-                        price_change = (close_last - prev_close) / prev_close if prev_close > 0 else 0
-
-                    if abs(price_change) < MIN_PRICE_CHANGE:
-                        continue
-
-                    prices = [c[4] for c in ohlcv]
-                    rsi = calculate_rsi(prices, RSI_PERIOD)
-                    market_cap_est = close_last * 1_000_000
-
-                    risk_score = calculate_risk_score(vol_multiple, price_change, rsi, market_cap_est)
-                    
-                    if risk_score < MIN_RISK_SCORE:
-                        continue
-
-                    pump_stage = get_pump_stage(rsi, price_change * 100, vol_multiple)
-
-                    if DEBUG_MODE and vol_multiple > 2:
-                        rsi_display = safe_rsi_format(rsi)
-                        print(f"[DEBUG] {exchange_name} {sym}: {vol_multiple:.1f}x, {price_change:+.1f}%, RSI {rsi_display}, Risk {risk_score}, {pump_stage}")
-
-                    # VOLUME SPIKE
-                    if vol_avg > 0 and vol_multiple >= THRESHOLD:
-                        key = f"SPIKE:{exchange_name}:{sym}"
-                        if can_alert(key, time.time()):
-                            send_enhanced_alert(sym, "VOLUME_SPIKE", {
-                                "volume_multiple": vol_multiple,
-                                "price_change": price_change * 100,
-                                "risk_score": risk_score,
-                                "rsi": rsi,
-                                "pump_stage": pump_stage,
-                                "confidence": "HIGH" if vol_multiple > 10 else "MEDIUM"
-                            }, exchange_name)
-
-                    # PUMP PATTERNS
-                    pump_found, pump_type, pump_data = detect_pump_pattern(ohlcv)
-                    if pump_found:
-                        key = f"PUMP:{pump_type}:{exchange_name}:{sym}"
-                        if can_alert(key, time.time()):
-                            send_enhanced_alert(sym, pump_type, {
-                                "volume_multiple": vol_multiple,
-                                "price_change": price_change * 100,
-                                "risk_score": risk_score,
-                                "rsi": rsi,
-                                "pump_stage": pump_stage,
-                                "confidence": pump_data.get("confidence", "MEDIUM")
-                            }, exchange_name)
-
-                    # RSI EXTREMES
-                    if rsi is not None:
-                        try:
-                            rsi_val = float(rsi)
-                            
-                            if rsi_val > RSI_OVERBOUGHT and vol_multiple > 2:
-                                key = f"DUMP:{exchange_name}:{sym}"
-                                if can_alert(key, time.time()):
-                                    send_enhanced_alert(sym, "DUMP_WARNING", {
-                                        "volume_multiple": vol_multiple,
-                                        "price_change": price_change * 100,
-                                        "risk_score": risk_score,
-                                        "rsi": rsi,
-                                        "pump_stage": "DUMP_WARNING",
-                                        "confidence": "HIGH"
-                                    }, exchange_name)
-                            
-                            elif rsi_val < RSI_OVERSOLD and vol_multiple > 2 and price_change < -0.05:
-                                key = f"OVERSOLD:{exchange_name}:{sym}"
-                                if can_alert(key, time.time()):
-                                    send_enhanced_alert(sym, "OVERSOLD_BOUNCE", {
-                                        "volume_multiple": vol_multiple,
-                                        "price_change": price_change * 100,
-                                        "risk_score": risk_score,
-                                        "rsi": rsi,
-                                        "pump_stage": "OVERSOLD_BOUNCE",
-                                        "confidence": "MEDIUM"
-                                    }, exchange_name)
-                        except:
-                            pass
-
-                    # STOP HUNTING
-                    sh_found, sh_side, sh = detect_stop_hunt(ohlcv)
-                    if sh_found:
-                        key = f"STOPHUNT:{sh_side}:{exchange_name}:{sym}"
-                        if can_alert(key, time.time()):
-                            sh_risk = calculate_risk_score(sh.get('vol_mult', 0), price_change, rsi, market_cap_est)
-                            if sh_risk >= MIN_RISK_SCORE:
-                                send_enhanced_alert(sym, "STOP_HUNT", {
-                                    "volume_multiple": sh.get('vol_mult', 0),
-                                    "price_change": price_change * 100,
-                                    "risk_score": sh_risk,
-                                    "rsi": rsi,
-                                    "pump_stage": "STOP_HUNT",
-                                    "confidence": "MEDIUM"
-                                }, exchange_name)
-
-                except ccxt.NetworkError:
-                    continue
-                except ccxt.ExchangeError as e:
-                    if "rate limit" in str(e).lower():
-                        time.sleep(2)
-                    continue
+                    print("🤖 Training ML models...")
+                    performances = self.ml_manager.train_all_models()
+                    if performances:
+                        print("✅ ML models trained successfully")
+                        for model, perf in performances.items():
+                            print(f"  • {model}: Accuracy {perf.accuracy:.3f}")
+                    else:
+                        print("⚠️ ML model training skipped (insufficient data)")
+                        self.ml_predictions = False
                 except Exception as e:
-                    if DEBUG_MODE:
-                        print(f"[ERROR] {exchange_name} {sym}: {e}")
-                    continue
-
-        elapsed = time.time() - loop_start
-        sleep_time = max(0, SLEEP_SECONDS - elapsed)
-        time.sleep(sleep_time)
-
-if __name__ == "__main__":
-    try:
-        main()
-    except KeyboardInterrupt:
-        print("\n👋 Bot encerrado.")
-        send_telegram("👋 Bot encerrado pelo utilizador.")
-    except Exception as e:
-        error_msg = f"❌ Bot crashed: {e}"
-        print(error_msg)
-        send_telegram(error_msg)
+                    print(f"❌ ML training failed: {e}")
+                    self.ml_predictions = False
+            
+            print("🎯 AI components initialization completed")
+            
+        except Exception as e:
+            print(f"❌ AI initialization error: {e}")
+            print("⚠️ Continuing with basic detection mode...")
+            self.ai_mode = False
+    
+    async def run_enhanced_detection_loop(self):
+        """Main detection loop with AI enhancements"""
+        
+        print("🔄 Starting enhanced detection loop...")
+        
+        loop_count = 0
+        last_stats_update = time.time()
+        
+        while True:
+            loop_start = time.time()
+            loop_count += 1
+            
+            # Progress info every 50 loops (about every 25 minutes)
+            if loop_count % 50 == 0:
+                uptime = (time.time() - self.stats['start_time']) / 3600
+                print(f"[STATS] Loop #{loop_count}")
+                print(f"  • Uptime: {uptime:.1f}h")
+                print(f"  • Alerts sent: {self.stats['alerts_sent']}")
+                print(f"  • Pumps detected: {self.stats['pumps_detected']}")
+                print(f"  • Pattern matches: {self.stats['patterns_matched']}")
+                print(f"  • ML predictions: {self.stats['ml_predictions_made']}")
