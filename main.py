@@ -10,7 +10,287 @@ from typing import Dict, List, Tuple, Optional
 from dataclasses import dataclass, asdict
 import hashlib
 import statistics
+import threading
+from datetime import datetime, timezone, timedelta
 
+# =========================
+#   AUTO-VALIDATION SYSTEM
+# =========================
+class AlertValidationSystem:
+    """Sistema que valida automaticamente alertas após 1h, 4h e 24h"""
+    
+    def __init__(self, bot_instance):
+        self.bot = bot_instance
+        self.pending_validations = []  # Alertas aguardando validação
+        self.validation_results = []  # Resultados históricos
+        self.validation_lock = threading.Lock()
+        
+        # Iniciar thread de validação
+        self.validation_thread = threading.Thread(target=self._validation_loop, daemon=True)
+        self.validation_thread.start()
+        
+        print("Alert Validation System initialized")
+    
+    def register_alert(self, alert_data: dict):
+        """Registra um alerta para validação futura"""
+        validation_record = {
+            'alert_id': f"{alert_data['symbol']}_{int(time.time())}",
+            'timestamp': int(time.time()),
+            'exchange': alert_data['exchange'],
+            'symbol': alert_data['symbol'],
+            'event_type': alert_data['event_type'],
+            'initial_price': alert_data.get('price', 0),
+            'volume_multiple': alert_data.get('volume_multiple', 0),
+            'strength': alert_data.get('event_strength', 0),
+            'prediction': alert_data.get('prediction'),
+            'validations': {
+                '1h': {'checked': False, 'price': None, 'result': None},
+                '4h': {'checked': False, 'price': None, 'result': None},
+                '24h': {'checked': False, 'price': None, 'result': None}
+            }
+        }
+        
+        with self.validation_lock:
+            self.pending_validations.append(validation_record)
+        
+        # Guardar em arquivo
+        self._save_pending_validations()
+    
+    def _validation_loop(self):
+        """Loop que verifica periodicamente alertas pendentes"""
+        while True:
+            try:
+                time.sleep(300)  # Verifica a cada 5 minutos
+                self._check_pending_validations()
+            except Exception as e:
+                print(f"[VALIDATION] Error in loop: {e}")
+    
+    def _check_pending_validations(self):
+        """Verifica alertas que precisam de validação"""
+        current_time = int(time.time())
+        
+        with self.validation_lock:
+            for record in self.pending_validations[:]:
+                alert_time = record['timestamp']
+                
+                # Verificar 1h
+                if not record['validations']['1h']['checked'] and current_time >= alert_time + 3600:
+                    self._validate_alert(record, '1h')
+                
+                # Verificar 4h
+                if not record['validations']['4h']['checked'] and current_time >= alert_time + 14400:
+                    self._validate_alert(record, '4h')
+                
+                # Verificar 24h
+                if not record['validations']['24h']['checked'] and current_time >= alert_time + 86400:
+                    self._validate_alert(record, '24h')
+                    # Após 24h, mover para resultados finais
+                    self.validation_results.append(record)
+                    self.pending_validations.remove(record)
+                    self._save_results()
+    
+    def _validate_alert(self, record: dict, timeframe: str):
+        """Valida um alerta específico em determinado timeframe"""
+        try:
+            # Buscar preço atual
+            exchange_name = record['exchange']
+            symbol = record['symbol']
+            
+            if exchange_name not in self.bot.exchanges:
+                return
+            
+            ex = self.bot.exchanges[exchange_name]
+            ticker = ex.fetch_ticker(symbol)
+            current_price = ticker['last']
+            
+            # Calcular mudança de preço
+            initial_price = record['initial_price']
+            price_change_pct = ((current_price - initial_price) / initial_price) * 100 if initial_price > 0 else 0
+            
+            # Atualizar registro
+            record['validations'][timeframe]['checked'] = True
+            record['validations'][timeframe]['price'] = current_price
+            record['validations'][timeframe]['price_change'] = price_change_pct
+            
+            # Determinar resultado
+            event_type = record['event_type']
+            result = self._classify_result(event_type, price_change_pct, timeframe)
+            record['validations'][timeframe]['result'] = result
+            
+            # Enviar notificação se for validação de 4h ou 24h
+            if timeframe in ['4h', '24h']:
+                self._send_validation_report(record, timeframe)
+            
+            self._save_pending_validations()
+            
+        except Exception as e:
+            print(f"[VALIDATION] Error validating {record['symbol']}: {e}")
+    
+    def _classify_result(self, event_type: str, price_change_pct: float, timeframe: str) -> str:
+        """Classifica o resultado da validação"""
+        
+        if event_type == "PUMP":
+            if price_change_pct > 5:
+                return "SUSTAINED_PUMP"
+            elif price_change_pct > 0:
+                return "WEAK_CONTINUATION"
+            elif price_change_pct > -5:
+                return "SMALL_REVERSAL"
+            else:
+                return "DUMP_REVERSAL"
+        
+        else:  # DUMP
+            if price_change_pct < -5:
+                return "SUSTAINED_DUMP"
+            elif price_change_pct < 0:
+                return "WEAK_CONTINUATION"
+            elif price_change_pct < 5:
+                return "SMALL_REVERSAL"
+            else:
+                return "PUMP_REVERSAL"
+    
+    def _send_validation_report(self, record: dict, timeframe: str):
+        """Envia relatório de validação para Telegram"""
+        
+        validation = record['validations'][timeframe]
+        
+        # Emojis baseados no resultado
+        result_emojis = {
+            'SUSTAINED_PUMP': '✅',
+            'SUSTAINED_DUMP': '✅',
+            'WEAK_CONTINUATION': '🟡',
+            'SMALL_REVERSAL': '🟠',
+            'DUMP_REVERSAL': '❌',
+            'PUMP_REVERSAL': '❌'
+        }
+        
+        result = validation['result']
+        emoji = result_emojis.get(result, '⚪')
+        
+        # Calcular accuracy geral
+        accuracy = self._calculate_accuracy()
+        
+        msg = f"""📊 <b>VALIDAÇÃO DE ALERTA ({timeframe})</b>
+
+<b>Alerta Original:</b>
+🎯 {record['symbol']} ({record['exchange'].upper()})
+📊 Tipo: {record['event_type']}
+⚡ Strength: {record['strength']}/10
+💹 Volume: {record['volume_multiple']:.1f}x
+⏰ Enviado há {timeframe}
+
+<b>Resultado:</b>
+{emoji} <b>{result.replace('_', ' ')}</b>
+💰 Preço inicial: ${record['initial_price']:.6f}
+💰 Preço agora: ${validation['price']:.6f}
+📈 Variação: {validation['price_change']:+.2f}%
+
+<b>Análise:</b>"""
+
+        if record['event_type'] == "PUMP":
+            if result == "SUSTAINED_PUMP":
+                msg += "\n✅ Pump sustentou-se - Alerta correto"
+            elif result == "DUMP_REVERSAL":
+                msg += "\n❌ Reversão para dump - Alerta falhou"
+            else:
+                msg += "\n🟡 Movimento inconclusivo"
+        else:  # DUMP
+            if result == "SUSTAINED_DUMP":
+                msg += "\n✅ Dump sustentou-se - Alerta correto"
+            elif result == "PUMP_REVERSAL":
+                msg += "\n❌ Reversão para pump - Alerta falhou"
+            else:
+                msg += "\n🟡 Movimento inconclusivo"
+        
+        msg += f"\n\n📊 <b>Accuracy do Bot:</b> {accuracy['overall']:.1f}%"
+        msg += f"\n• Pumps: {accuracy['pump']:.1f}%"
+        msg += f"\n• Dumps: {accuracy['dump']:.1f}%"
+        msg += f"\n• Total validado: {accuracy['total_validated']} alertas"
+        
+        self.bot.send_telegram(msg)
+    
+    def _calculate_accuracy(self) -> dict:
+        """Calcula accuracy geral do sistema"""
+        
+        if len(self.validation_results) < 10:
+            return {
+                'overall': 0.0,
+                'pump': 0.0,
+                'dump': 0.0,
+                'total_validated': len(self.validation_results)
+            }
+        
+        pump_correct = 0
+        pump_total = 0
+        dump_correct = 0
+        dump_total = 0
+        
+        for record in self.validation_results:
+            # Usar validação de 4h como referência
+            val_4h = record['validations']['4h']
+            
+            if not val_4h['checked']:
+                continue
+            
+            result = val_4h['result']
+            event_type = record['event_type']
+            
+            if event_type == "PUMP":
+                pump_total += 1
+                if result in ['SUSTAINED_PUMP', 'WEAK_CONTINUATION']:
+                    pump_correct += 1
+            else:
+                dump_total += 1
+                if result in ['SUSTAINED_DUMP', 'WEAK_CONTINUATION']:
+                    dump_correct += 1
+        
+        pump_accuracy = (pump_correct / pump_total * 100) if pump_total > 0 else 0
+        dump_accuracy = (dump_correct / dump_total * 100) if dump_total > 0 else 0
+        overall_accuracy = ((pump_correct + dump_correct) / (pump_total + dump_total) * 100) if (pump_total + dump_total) > 0 else 0
+        
+        return {
+            'overall': overall_accuracy,
+            'pump': pump_accuracy,
+            'dump': dump_accuracy,
+            'total_validated': len(self.validation_results)
+        }
+    
+    def _save_pending_validations(self):
+        """Salva validações pendentes em arquivo"""
+        try:
+            validation_file = os.path.join(self.bot.db.data_dir, "pending_validations.json")
+            with open(validation_file, 'w') as f:
+                json.dump(self.pending_validations, f, indent=2)
+        except Exception as e:
+            print(f"[VALIDATION] Error saving pending: {e}")
+    
+    def _save_results(self):
+        """Salva resultados finais"""
+        try:
+            results_file = os.path.join(self.bot.db.data_dir, "validation_results.json")
+            with open(results_file, 'w') as f:
+                json.dump(self.validation_results, f, indent=2)
+        except Exception as e:
+            print(f"[VALIDATION] Error saving results: {e}")
+    
+    def _load_existing_data(self):
+        """Carrega dados existentes ao iniciar"""
+        try:
+            # Carregar validações pendentes
+            validation_file = os.path.join(self.bot.db.data_dir, "pending_validations.json")
+            if os.path.exists(validation_file):
+                with open(validation_file, 'r') as f:
+                    self.pending_validations = json.load(f)
+            
+            # Carregar resultados
+            results_file = os.path.join(self.bot.db.data_dir, "validation_results.json")
+            if os.path.exists(results_file):
+                with open(results_file, 'r') as f:
+                    self.validation_results = json.load(f)
+            
+            print(f"[VALIDATION] Loaded {len(self.pending_validations)} pending, {len(self.validation_results)} completed")
+        except Exception as e:
+            print(f"[VALIDATION] Error loading data: {e}")
 # =========================
 #   FILE-BASED DATABASE (Railway Compatible)
 # =========================
