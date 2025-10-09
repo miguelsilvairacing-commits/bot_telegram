@@ -29,6 +29,9 @@ class AlertValidationSystem:
         self.validation_thread = threading.Thread(target=self._validation_loop, daemon=True)
         self.validation_thread.start()
         
+        # ✅ ALTERAÇÃO 1: Carregar dados existentes
+        self._load_existing_data()
+        
         print("Alert Validation System initialized")
     
     def register_alert(self, alert_data: dict):
@@ -726,6 +729,10 @@ class AdvancedPatternTradingBot:
         self.db = FileBasedPatternDB()
         self.correlation_engine = PatternCorrelationEngine(self.db)
         
+        # ✅ ALTERAÇÃO 2: Inicializar sistema de validação
+        self.validation_system = AlertValidationSystem(self)
+        print("✅ Validation system initialized")
+        
         # Bot configuration
         self.exchanges = {}
         self.watchlist = {}
@@ -1075,10 +1082,27 @@ Ready for pattern correlation analysis! 🚀"""
                             alert_message = self.generate_correlation_alert(event, analysis)
                             self.send_telegram(alert_message)
                             
+                            # ✅ ALTERAÇÃO 3: Registar alerta para validação
+                            alert_data = {
+                                'symbol': event.symbol,
+                                'exchange': event.exchange,
+                                'event_type': event.event_type,
+                                'price': close_last,
+                                'volume_multiple': vol_multiple,
+                                'event_strength': event_strength,
+                                'prediction': {
+                                    'direction': 'UP' if event.event_type == 'PUMP' else 'DOWN',
+                                    'cascade_risk': analysis['cascade_risk']['cascade_risk_score'],
+                                    'correlations_count': len(analysis['correlations_found'])
+                                }
+                            }
+                            self.validation_system.register_alert(alert_data)
+                            
                             if self.debug_mode:
                                 print(f"[ALERT] {exchange_name} {symbol}: {event_type} {vol_multiple:.1f}x")
                                 print(f"  Correlations: {len(analysis['correlations_found'])}")
                                 print(f"  Cascade risk: {analysis['cascade_risk']['cascade_risk_score']:.2f}")
+                                print(f"[VALIDATION] Registered alert for tracking: {symbol}")
                     
                     except Exception as e:
                         if self.debug_mode:
