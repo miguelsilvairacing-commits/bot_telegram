@@ -11,28 +11,28 @@ from dataclasses import dataclass, asdict
 import hashlib
 import statistics
 import threading
-from datetime import datetime, timezone, timedelta
 
 # =========================
-#   AUTO-VALIDATION SYSTEM
+#   AUTO-VALIDATION SYSTEM (OPTIMIZED)
 # =========================
 class AlertValidationSystem:
-    """Sistema que valida automaticamente alertas após 1h, 4h e 24h"""
+    """Sistema que valida automaticamente alertas e envia resumos diários"""
     
     def __init__(self, bot_instance):
         self.bot = bot_instance
-        self.pending_validations = []  # Alertas aguardando validação
-        self.validation_results = []  # Resultados históricos
+        self.pending_validations = []
+        self.validation_results = []
         self.validation_lock = threading.Lock()
+        self.last_daily_report = 0  # Timestamp do último relatório diário
         
         # Iniciar thread de validação
         self.validation_thread = threading.Thread(target=self._validation_loop, daemon=True)
         self.validation_thread.start()
         
-        # ✅ ALTERAÇÃO 1: Carregar dados existentes
+        # Carregar dados existentes
         self._load_existing_data()
         
-        print("Alert Validation System initialized")
+        print("Alert Validation System initialized (Optimized)")
     
     def register_alert(self, alert_data: dict):
         """Registra um alerta para validação futura"""
@@ -56,7 +56,6 @@ class AlertValidationSystem:
         with self.validation_lock:
             self.pending_validations.append(validation_record)
         
-        # Guardar em arquivo
         self._save_pending_validations()
     
     def _validation_loop(self):
@@ -65,6 +64,7 @@ class AlertValidationSystem:
             try:
                 time.sleep(300)  # Verifica a cada 5 minutos
                 self._check_pending_validations()
+                self._check_daily_report()
             except Exception as e:
                 print(f"[VALIDATION] Error in loop: {e}")
     
@@ -76,26 +76,28 @@ class AlertValidationSystem:
             for record in self.pending_validations[:]:
                 alert_time = record['timestamp']
                 
-                # Verificar 1h
+                # Verificar 1h (silencioso)
                 if not record['validations']['1h']['checked'] and current_time >= alert_time + 3600:
-                    self._validate_alert(record, '1h')
+                    self._validate_alert(record, '1h', notify=False)
                 
-                # Verificar 4h
+                # Verificar 4h (só notifica se strength >= 8)
                 if not record['validations']['4h']['checked'] and current_time >= alert_time + 14400:
-                    self._validate_alert(record, '4h')
+                    notify_4h = record['strength'] >= 8
+                    self._validate_alert(record, '4h', notify=notify_4h)
                 
-                # Verificar 24h
+                # Verificar 24h (sempre notifica alertas importantes)
                 if not record['validations']['24h']['checked'] and current_time >= alert_time + 86400:
-                    self._validate_alert(record, '24h')
-                    # Após 24h, mover para resultados finais
+                    notify_24h = record['strength'] >= 7
+                    self._validate_alert(record, '24h', notify=notify_24h)
+                    
+                    # Mover para resultados finais
                     self.validation_results.append(record)
                     self.pending_validations.remove(record)
                     self._save_results()
     
-    def _validate_alert(self, record: dict, timeframe: str):
+    def _validate_alert(self, record: dict, timeframe: str, notify: bool = True):
         """Valida um alerta específico em determinado timeframe"""
         try:
-            # Buscar preço atual
             exchange_name = record['exchange']
             symbol = record['symbol']
             
@@ -106,7 +108,6 @@ class AlertValidationSystem:
             ticker = ex.fetch_ticker(symbol)
             current_price = ticker['last']
             
-            # Calcular mudança de preço
             initial_price = record['initial_price']
             price_change_pct = ((current_price - initial_price) / initial_price) * 100 if initial_price > 0 else 0
             
@@ -115,13 +116,12 @@ class AlertValidationSystem:
             record['validations'][timeframe]['price'] = current_price
             record['validations'][timeframe]['price_change'] = price_change_pct
             
-            # Determinar resultado
             event_type = record['event_type']
             result = self._classify_result(event_type, price_change_pct, timeframe)
             record['validations'][timeframe]['result'] = result
             
-            # Enviar notificação se for validação de 4h ou 24h
-            if timeframe in ['4h', '24h']:
+            # Enviar notificação apenas se solicitado
+            if notify:
                 self._send_validation_report(record, timeframe)
             
             self._save_pending_validations()
@@ -141,7 +141,6 @@ class AlertValidationSystem:
                 return "SMALL_REVERSAL"
             else:
                 return "DUMP_REVERSAL"
-        
         else:  # DUMP
             if price_change_pct < -5:
                 return "SUSTAINED_DUMP"
@@ -153,62 +152,136 @@ class AlertValidationSystem:
                 return "PUMP_REVERSAL"
     
     def _send_validation_report(self, record: dict, timeframe: str):
-        """Envia relatório de validação para Telegram"""
+        """Envia relatório de validação individual (só alertas importantes)"""
         
         validation = record['validations'][timeframe]
         
-        # Emojis baseados no resultado
         result_emojis = {
-            'SUSTAINED_PUMP': '✅',
-            'SUSTAINED_DUMP': '✅',
-            'WEAK_CONTINUATION': '🟡',
-            'SMALL_REVERSAL': '🟠',
-            'DUMP_REVERSAL': '❌',
-            'PUMP_REVERSAL': '❌'
+            'SUSTAINED_PUMP': '✅ 🚀',
+            'SUSTAINED_DUMP': '✅ 📉',
+            'WEAK_CONTINUATION': '🟡 ⚖️',
+            'SMALL_REVERSAL': '🟠 🔄',
+            'DUMP_REVERSAL': '❌ 💥',
+            'PUMP_REVERSAL': '❌ 💥'
         }
         
         result = validation['result']
         emoji = result_emojis.get(result, '⚪')
         
-        # Calcular accuracy geral
         accuracy = self._calculate_accuracy()
         
-        msg = f"""📊 <b>VALIDAÇÃO DE ALERTA ({timeframe})</b>
+        success = result in ['SUSTAINED_PUMP', 'SUSTAINED_DUMP', 'WEAK_CONTINUATION']
+        
+        msg = f"""📊 <b>VALIDAÇÃO [{timeframe}] - Alerta Importante</b>
 
-<b>Alerta Original:</b>
-🎯 {record['symbol']} ({record['exchange'].upper()})
+{'✅ ALERTA CONFIRMADO' if success else '❌ ALERTA FALHOU'}
+
+<b>🎯 {record['symbol']} ({record['exchange'].upper()})</b>
 📊 Tipo: {record['event_type']}
 ⚡ Strength: {record['strength']}/10
 💹 Volume: {record['volume_multiple']:.1f}x
-⏰ Enviado há {timeframe}
 
-<b>Resultado:</b>
+<b>💰 Resultado:</b>
 {emoji} <b>{result.replace('_', ' ')}</b>
-💰 Preço inicial: ${record['initial_price']:.6f}
-💰 Preço agora: ${validation['price']:.6f}
-📈 Variação: {validation['price_change']:+.2f}%
+Inicial: ${record['initial_price']:.6f}
+Actual: ${validation['price']:.6f}
+Mudança: {validation['price_change']:+.2f}%
 
-<b>Análise:</b>"""
-
-        if record['event_type'] == "PUMP":
-            if result == "SUSTAINED_PUMP":
-                msg += "\n✅ Pump sustentou-se - Alerta correto"
-            elif result == "DUMP_REVERSAL":
-                msg += "\n❌ Reversão para dump - Alerta falhou"
-            else:
-                msg += "\n🟡 Movimento inconclusivo"
-        else:  # DUMP
-            if result == "SUSTAINED_DUMP":
-                msg += "\n✅ Dump sustentou-se - Alerta correto"
-            elif result == "PUMP_REVERSAL":
-                msg += "\n❌ Reversão para pump - Alerta falhou"
-            else:
-                msg += "\n🟡 Movimento inconclusivo"
+📈 <b>Accuracy Geral:</b> {accuracy['overall']:.1f}%
+• Validados: {accuracy['total_validated']} alertas"""
         
-        msg += f"\n\n📊 <b>Accuracy do Bot:</b> {accuracy['overall']:.1f}%"
-        msg += f"\n• Pumps: {accuracy['pump']:.1f}%"
-        msg += f"\n• Dumps: {accuracy['dump']:.1f}%"
-        msg += f"\n• Total validado: {accuracy['total_validated']} alertas"
+        self.bot.send_telegram(msg)
+    
+    def _check_daily_report(self):
+        """Verifica se deve enviar relatório diário"""
+        current_time = int(time.time())
+        
+        # Enviar relatório às 10:00 UTC (aproximadamente)
+        current_hour = datetime.fromtimestamp(current_time).hour
+        
+        # Se já passou 24h desde o último relatório e são 10h da manhã
+        if (current_time - self.last_daily_report) >= 86400 and current_hour == 10:
+            self._send_daily_report()
+            self.last_daily_report = current_time
+    
+    def _send_daily_report(self):
+        """Envia relatório diário consolidado"""
+        
+        # Pegar validações das últimas 24h
+        cutoff = int(time.time()) - 86400
+        recent_validations = [r for r in self.validation_results if r['timestamp'] > cutoff]
+        
+        if len(recent_validations) < 3:
+            return  # Não enviar se tiver poucos dados
+        
+        # Calcular estatísticas
+        pump_correct = 0
+        pump_total = 0
+        dump_correct = 0
+        dump_total = 0
+        
+        best_alerts = []
+        worst_alerts = []
+        
+        for record in recent_validations:
+            val_4h = record['validations'].get('4h', {})
+            
+            if not val_4h.get('checked', False):
+                continue
+            
+            result = val_4h.get('result', 'UNKNOWN')
+            event_type = record.get('event_type', 'UNKNOWN')
+            price_change = val_4h.get('price_change', 0)
+            
+            # Contar accuracy
+            if event_type == 'PUMP':
+                pump_total += 1
+                if result in ['SUSTAINED_PUMP', 'WEAK_CONTINUATION']:
+                    pump_correct += 1
+                    if price_change > 10:
+                        best_alerts.append((record, price_change))
+                else:
+                    if price_change < -10:
+                        worst_alerts.append((record, price_change))
+            elif event_type == 'DUMP':
+                dump_total += 1
+                if result in ['SUSTAINED_DUMP', 'WEAK_CONTINUATION']:
+                    dump_correct += 1
+                    if price_change < -10:
+                        best_alerts.append((record, price_change))
+                else:
+                    if price_change > 10:
+                        worst_alerts.append((record, price_change))
+        
+        pump_accuracy = (pump_correct / pump_total * 100) if pump_total > 0 else 0
+        dump_accuracy = (dump_correct / dump_total * 100) if dump_total > 0 else 0
+        overall = ((pump_correct + dump_correct) / (pump_total + dump_total) * 100) if (pump_total + dump_total) > 0 else 0
+        
+        # Construir mensagem
+        msg = f"""📊 <b>RELATÓRIO DIÁRIO DE VALIDAÇÃO</b>
+
+<b>🎯 Accuracy nas Últimas 24h:</b>
+• Overall: {overall:.1f}% ({pump_correct + dump_correct}/{pump_total + dump_total})
+• Pumps: {pump_accuracy:.1f}% ({pump_correct}/{pump_total})
+• Dumps: {dump_accuracy:.1f}% ({dump_correct}/{dump_total})
+
+<b>📈 Total Validado:</b> {len(self.validation_results)} alertas"""
+        
+        # Melhores alertas
+        if best_alerts:
+            best_alerts.sort(key=lambda x: abs(x[1]), reverse=True)
+            msg += "\n\n<b>✅ TOP 3 Melhores Alertas:</b>"
+            for record, change in best_alerts[:3]:
+                msg += f"\n• {record['symbol']}: {change:+.1f}% ({record['event_type']})"
+        
+        # Piores alertas
+        if worst_alerts:
+            worst_alerts.sort(key=lambda x: abs(x[1]), reverse=True)
+            msg += "\n\n<b>❌ TOP 3 Piores Alertas:</b>"
+            for record, change in worst_alerts[:3]:
+                msg += f"\n• {record['symbol']}: {change:+.1f}% (previsto {record['event_type']})"
+        
+        msg += f"\n\n🕐 {datetime.now().strftime('%d/%m/%Y %H:%M UTC')}"
         
         self.bot.send_telegram(msg)
     
@@ -229,7 +302,6 @@ class AlertValidationSystem:
         dump_total = 0
         
         for record in self.validation_results:
-            # Usar validação de 4h como referência
             val_4h = record['validations']['4h']
             
             if not val_4h['checked']:
@@ -259,7 +331,7 @@ class AlertValidationSystem:
         }
     
     def _save_pending_validations(self):
-        """Salva validações pendentes em arquivo"""
+        """Salva validações pendentes"""
         try:
             validation_file = os.path.join(self.bot.db.data_dir, "pending_validations.json")
             with open(validation_file, 'w') as f:
@@ -277,15 +349,13 @@ class AlertValidationSystem:
             print(f"[VALIDATION] Error saving results: {e}")
     
     def _load_existing_data(self):
-        """Carrega dados existentes ao iniciar"""
+        """Carrega dados existentes"""
         try:
-            # Carregar validações pendentes
             validation_file = os.path.join(self.bot.db.data_dir, "pending_validations.json")
             if os.path.exists(validation_file):
                 with open(validation_file, 'r') as f:
                     self.pending_validations = json.load(f)
             
-            # Carregar resultados
             results_file = os.path.join(self.bot.db.data_dir, "validation_results.json")
             if os.path.exists(results_file):
                 with open(results_file, 'r') as f:
@@ -294,44 +364,39 @@ class AlertValidationSystem:
             print(f"[VALIDATION] Loaded {len(self.pending_validations)} pending, {len(self.validation_results)} completed")
         except Exception as e:
             print(f"[VALIDATION] Error loading data: {e}")
+
 # =========================
-#   FILE-BASED DATABASE (Railway Compatible)
+#   FILE-BASED DATABASE
 # =========================
 class FileBasedPatternDB:
-    """File-based database using JSON for Railway compatibility"""
+    """File-based database using JSON"""
     
     def __init__(self, data_dir="pattern_data"):
         self.data_dir = data_dir
         self.ensure_data_dir()
         
-        # In-memory structures for fast access
-        self.events_buffer = deque(maxlen=1000)  # Recent events
-        self.correlations = {}  # symbol_pair -> correlation_data
-        self.sessions = {}  # session_id -> session_data
-        self.predictions = deque(maxlen=100)  # Recent predictions
+        self.events_buffer = deque(maxlen=1000)
+        self.correlations = {}
+        self.sessions = {}
+        self.predictions = deque(maxlen=100)
         
-        # Load existing data
         self._load_existing_data()
         
-        print("File-based pattern database initialized (Railway compatible)")
+        print("File-based pattern database initialized")
     
     def ensure_data_dir(self):
-        """Ensure data directory exists"""
         if not os.path.exists(self.data_dir):
             os.makedirs(self.data_dir)
     
     def _load_existing_data(self):
-        """Load existing data from files"""
         try:
-            # Load recent events
             events_file = os.path.join(self.data_dir, "recent_events.json")
             if os.path.exists(events_file):
                 with open(events_file, 'r') as f:
                     events_data = json.load(f)
-                    for event in events_data[-1000:]:  # Load last 1000 events
+                    for event in events_data[-1000:]:
                         self.events_buffer.append(event)
             
-            # Load correlations
             corr_file = os.path.join(self.data_dir, "correlations.json")
             if os.path.exists(corr_file):
                 with open(corr_file, 'r') as f:
@@ -343,14 +408,11 @@ class FileBasedPatternDB:
             print(f"Error loading existing data: {e}")
     
     def _save_data_periodically(self):
-        """Save data to files periodically"""
         try:
-            # Save recent events
             events_file = os.path.join(self.data_dir, "recent_events.json")
             with open(events_file, 'w') as f:
                 json.dump(list(self.events_buffer), f, indent=2)
             
-            # Save correlations
             corr_file = os.path.join(self.data_dir, "correlations.json")
             with open(corr_file, 'w') as f:
                 json.dump(self.correlations, f, indent=2)
@@ -359,8 +421,6 @@ class FileBasedPatternDB:
             print(f"Error saving data: {e}")
     
     def log_market_event(self, event_data: Dict) -> str:
-        """Log market event and return session ID"""
-        # Generate session ID (30-minute windows)
         timestamp = event_data['timestamp']
         window_start = (timestamp // 1800) * 1800
         session_id = f"SESSION_{window_start}"
@@ -368,10 +428,8 @@ class FileBasedPatternDB:
         event_data['session_id'] = session_id
         event_data['logged_at'] = int(time.time())
         
-        # Add to buffer
         self.events_buffer.append(event_data)
         
-        # Update session data
         if session_id not in self.sessions:
             self.sessions[session_id] = {
                 'session_id': session_id,
@@ -383,14 +441,12 @@ class FileBasedPatternDB:
         self.sessions[session_id]['events'].append(event_data)
         self.sessions[session_id]['total_events'] += 1
         
-        # Periodic save (every 10 events)
         if len(self.events_buffer) % 10 == 0:
             self._save_data_periodically()
         
         return session_id
     
     def get_recent_events(self, hours: int = 2) -> List[Dict]:
-        """Get recent events"""
         since = int((datetime.now() - timedelta(hours=hours)).timestamp())
         
         recent = []
@@ -402,7 +458,6 @@ class FileBasedPatternDB:
     
     def update_symbol_correlation(self, symbol1: str, symbol2: str, 
                                  correlation_type: str, strength: float, delay: int):
-        """Update correlation between symbols"""
         key = f"{symbol1}|{symbol2}|{correlation_type}"
         
         if key not in self.correlations:
@@ -416,7 +471,6 @@ class FileBasedPatternDB:
                 'last_updated': int(time.time())
             }
         else:
-            # Update existing correlation (moving average)
             existing = self.correlations[key]
             existing['correlation_strength'] = (existing['correlation_strength'] + strength) / 2
             existing['time_delay_minutes'] = (existing['time_delay_minutes'] + delay) / 2
@@ -424,7 +478,6 @@ class FileBasedPatternDB:
             existing['last_updated'] = int(time.time())
     
     def get_symbol_correlations(self, symbol: str, min_strength: float = 0.7) -> List[Dict]:
-        """Get correlations for a symbol"""
         correlations = []
         
         for key, corr in self.correlations.items():
@@ -470,32 +523,21 @@ class PatternCorrelationEngine:
     
     def __init__(self, db: FileBasedPatternDB):
         self.db = db
-        self.active_events = deque(maxlen=500)  # Keep recent events in memory
+        self.active_events = deque(maxlen=500)
         self.correlation_threshold = 0.7
         self.time_window_minutes = 30
         
-        print("Pattern Correlation Engine initialized with file storage")
+        print("Pattern Correlation Engine initialized")
     
     def process_new_event(self, event: MarketEvent) -> Dict:
-        """Process new market event and detect correlations"""
-        
-        # Add to active events
         self.active_events.append(event)
         
-        # Log to database
         event_data = asdict(event)
         session_id = self.db.log_market_event(event_data)
         
-        # Analyze correlations with recent events
         correlations_found = self._analyze_event_correlations(event)
-        
-        # Check for cascade patterns
         cascade_risk = self._detect_cascade_risk(event)
-        
-        # Update market regime
         regime = self._assess_market_regime()
-        
-        # Generate predictions
         predictions = self._generate_predictions(event, correlations_found, cascade_risk)
         
         return {
@@ -507,23 +549,18 @@ class PatternCorrelationEngine:
         }
     
     def _analyze_event_correlations(self, new_event: MarketEvent) -> List[CorrelationPattern]:
-        """Find correlations between new event and recent events"""
-        
         correlations = []
         time_threshold = new_event.timestamp - (self.time_window_minutes * 60)
         
-        # Group recent events by symbol
         recent_by_symbol = defaultdict(list)
         for event in self.active_events:
             if event.timestamp > time_threshold and event.symbol != new_event.symbol:
                 recent_by_symbol[event.symbol].append(event)
         
-        # Analyze each symbol for correlations
         for symbol, events in recent_by_symbol.items():
             if len(events) == 0:
                 continue
             
-            # Check for pump-follow patterns
             pump_correlation = self._check_pump_follow_pattern(new_event, events)
             if pump_correlation:
                 correlations.append(pump_correlation)
@@ -532,7 +569,6 @@ class PatternCorrelationEngine:
                     "PUMP_FOLLOW", pump_correlation.strength, pump_correlation.time_delay
                 )
             
-            # Check for dump-follow patterns  
             dump_correlation = self._check_dump_follow_pattern(new_event, events)
             if dump_correlation:
                 correlations.append(dump_correlation)
@@ -544,8 +580,6 @@ class PatternCorrelationEngine:
         return correlations
     
     def _check_pump_follow_pattern(self, new_event: MarketEvent, recent_events: List[MarketEvent]) -> Optional[CorrelationPattern]:
-        """Check if new pump follows recent pumps in another symbol"""
-        
         if new_event.event_type != "PUMP":
             return None
         
@@ -554,9 +588,8 @@ class PatternCorrelationEngine:
             return None
         
         closest_pump = min(recent_pumps, key=lambda x: abs(x.timestamp - new_event.timestamp))
-        time_delay = abs(new_event.timestamp - closest_pump.timestamp) // 60  # minutes
+        time_delay = abs(new_event.timestamp - closest_pump.timestamp) // 60
         
-        # Calculate correlation strength
         time_score = max(0, 1 - (time_delay / self.time_window_minutes))
         volume_score = min(new_event.volume_multiple, closest_pump.volume_multiple) / max(new_event.volume_multiple, closest_pump.volume_multiple)
         strength_score = min(new_event.event_strength, closest_pump.event_strength) / max(new_event.event_strength, closest_pump.event_strength)
@@ -576,7 +609,6 @@ class PatternCorrelationEngine:
         return None
     
     def _check_dump_follow_pattern(self, new_event: MarketEvent, recent_events: List[MarketEvent]) -> Optional[CorrelationPattern]:
-        """Check for dump-follow correlations"""
         if new_event.event_type != "DUMP":
             return None
         
@@ -605,26 +637,22 @@ class PatternCorrelationEngine:
         return None
     
     def _detect_cascade_risk(self, new_event: MarketEvent) -> Dict:
-        """Detect risk of market cascade"""
-        
-        recent_threshold = new_event.timestamp - 3600  # Last hour
+        recent_threshold = new_event.timestamp - 3600
         recent_events = [e for e in self.active_events if e.timestamp > recent_threshold]
         
         pumps_count = len([e for e in recent_events if e.event_type == "PUMP"])
         dumps_count = len([e for e in recent_events if e.event_type == "DUMP"])
         
-        # Calculate cascade risk factors
         cascade_risk_score = 0.0
         
-        if pumps_count >= 5:  # Many recent pumps
+        if pumps_count >= 5:
             cascade_risk_score += 0.4
         
-        if new_event.event_type == "DUMP" and dumps_count >= 2:  # Dump cascade starting
+        if new_event.event_type == "DUMP" and dumps_count >= 2:
             cascade_risk_score += 0.4
         
-        # Time-based risk
         hour = datetime.fromtimestamp(new_event.timestamp).hour
-        if hour in [22, 23, 0, 1, 2]:  # Late night dumps
+        if hour in [22, 23, 0, 1, 2]:
             cascade_risk_score += 0.2
         
         return {
@@ -636,9 +664,7 @@ class PatternCorrelationEngine:
         }
     
     def _assess_market_regime(self) -> Dict:
-        """Assess current market regime"""
-        
-        recent_events = list(self.active_events)[-50:]  # Last 50 events
+        recent_events = list(self.active_events)[-50:]
         
         if len(recent_events) < 10:
             return {'regime': 'INSUFFICIENT_DATA', 'confidence': 0.0}
@@ -649,7 +675,6 @@ class PatternCorrelationEngine:
         pump_ratio = len(pumps) / len(recent_events)
         avg_volume_multiple = statistics.mean(e.volume_multiple for e in recent_events)
         
-        # Determine regime
         if pump_ratio > 0.7 and avg_volume_multiple > 8:
             regime = "PUMP_MANIPULATION"
             confidence = 0.9
@@ -657,7 +682,7 @@ class PatternCorrelationEngine:
             regime = "DUMP_CASCADE"
             confidence = 0.8
         elif avg_volume_multiple > 15:
-            regime = "HIGH_MANIPULATION"  
+            regime = "HIGH_MANIPULATION"
             confidence = 0.85
         else:
             regime = "MIXED_SIGNALS"
@@ -672,18 +697,14 @@ class PatternCorrelationEngine:
         }
     
     def _calculate_coordination_score(self, events: List[MarketEvent]) -> float:
-        """Calculate coordination score"""
-        
         if len(events) < 5:
             return 0.0
         
-        # Group events by time windows (5-minute windows)
         time_windows = defaultdict(list)
         for event in events:
             window = (event.timestamp // 300) * 300
             time_windows[window].append(event)
         
-        # Find coordinated windows
         coordinated_windows = [w for w, evs in time_windows.items() if len(evs) >= 3]
         coordination_score = len(coordinated_windows) / len(time_windows) if time_windows else 0
         
@@ -691,11 +712,8 @@ class PatternCorrelationEngine:
     
     def _generate_predictions(self, event: MarketEvent, correlations: List[CorrelationPattern], 
                             cascade_risk: Dict) -> List[Dict]:
-        """Generate predictions based on patterns"""
-        
         predictions = []
         
-        # Correlation-based predictions
         for corr in correlations:
             if corr.correlation_type == "PUMP_FOLLOW":
                 predictions.append({
@@ -706,7 +724,6 @@ class PatternCorrelationEngine:
                     'reason': f"Follows {corr.symbol_pair[0]} pump pattern"
                 })
         
-        # Cascade predictions
         if cascade_risk['cascade_risk_score'] > 0.6:
             predictions.append({
                 'type': 'MARKET_CASCADE',
@@ -719,41 +736,35 @@ class PatternCorrelationEngine:
         return predictions
 
 # =========================
-#   ENHANCED TRADING BOT
+#   ENHANCED TRADING BOT (OPTIMIZED)
 # =========================
 class AdvancedPatternTradingBot:
-    """Trading bot with pattern correlation analysis - Railway compatible"""
+    """Trading bot optimized for more useful alerts and less spam"""
     
     def __init__(self):
-        # Initialize components
         self.db = FileBasedPatternDB()
         self.correlation_engine = PatternCorrelationEngine(self.db)
-        
-        # ✅ ALTERAÇÃO 2: Inicializar sistema de validação
         self.validation_system = AlertValidationSystem(self)
-        print("✅ Validation system initialized")
         
-        # Bot configuration
         self.exchanges = {}
         self.watchlist = {}
         self.last_alert_ts = defaultdict(lambda: 0.0)
         
-        # Configuration from environment
+        # Configuration
         self.exchanges_list = os.getenv("EXCHANGES", "binance,bingx").split(",")
         self.quote_filter = os.getenv("QUOTE_FILTER", "USDT").split(",")
         self.top_n_by_volume = int(os.getenv("TOP_N_BY_VOLUME", "50"))
         self.timeframe = os.getenv("TIMEFRAME", "1m")
-        self.threshold = float(os.getenv("THRESHOLD", "3.0"))
-        self.min_price_change = float(os.getenv("MIN_PRICE_CHANGE", "0.04"))
+        self.threshold = float(os.getenv("THRESHOLD", "2.5"))
+        self.min_price_change = float(os.getenv("MIN_PRICE_CHANGE", "0.03"))
         self.sleep_seconds = int(os.getenv("SLEEP_SECONDS", "20"))
-        self.cooldown_minutes = int(os.getenv("COOLDOWN_MINUTES", "15"))
+        self.cooldown_minutes = int(os.getenv("COOLDOWN_MINUTES", "10"))
+        self.min_strength = int(os.getenv("MIN_STRENGTH", "5"))  # NOVO
         self.debug_mode = os.getenv("DEBUG_MODE", "true").lower() == "true"
         
-        # Telegram
         self.tg_token = os.getenv("TG_TOKEN", "")
         self.tg_chat_id = os.getenv("TG_CHAT_ID", "")
         
-        # Stats
         self.stats = {
             'events_logged': 0,
             'correlations_found': 0,
@@ -762,10 +773,9 @@ class AdvancedPatternTradingBot:
             'start_time': time.time()
         }
         
-        print("Advanced Pattern Trading Bot initialized (Railway compatible)")
+        print(f"Bot initialized - Threshold: {self.threshold}, MinStrength: {self.min_strength}")
     
     def send_telegram(self, msg: str):
-        """Send message to Telegram"""
         if not self.tg_token or not self.tg_chat_id:
             if self.debug_mode:
                 print("[Telegram] Not configured. Message:")
@@ -787,7 +797,6 @@ class AdvancedPatternTradingBot:
             print(f"[Telegram] Error: {e}")
     
     def build_exchange(self, name: str):
-        """Build exchange"""
         name = name.strip().lower()
         if not hasattr(ccxt, name):
             raise ValueError(f"Exchange '{name}' not found")
@@ -804,7 +813,6 @@ class AdvancedPatternTradingBot:
         return ex
     
     def get_symbols_for_exchange(self, ex, limit: int = 50):
-        """Get top volume symbols"""
         try:
             tickers = ex.fetch_tickers()
             volume_pairs = []
@@ -825,7 +833,6 @@ class AdvancedPatternTradingBot:
             return []
     
     def calculate_rsi(self, prices: List[float], period: int = 14) -> Optional[float]:
-        """Calculate RSI"""
         try:
             if len(prices) < period + 1:
                 return None
@@ -849,7 +856,6 @@ class AdvancedPatternTradingBot:
             return None
     
     def fetch_ohlcv_safe(self, ex, symbol: str, timeframe: str, limit: int):
-        """Safe OHLCV fetch"""
         max_retries = 3
         
         for attempt in range(max_retries):
@@ -876,15 +882,12 @@ class AdvancedPatternTradingBot:
         return None
     
     def can_alert(self, key: str, now_ts: float) -> bool:
-        """Check if can send alert"""
         if (now_ts - self.last_alert_ts[key]) >= self.cooldown_minutes * 60:
             self.last_alert_ts[key] = now_ts
             return True
         return False
     
     def generate_correlation_alert(self, event: MarketEvent, analysis: Dict) -> str:
-        """Generate correlation alert"""
-        
         msg = f"""🧬 <b>PATTERN CORRELATION DETECTED</b>
 
 🎯 <b>Event:</b> {event.symbol} ({event.exchange.upper()})
@@ -894,7 +897,6 @@ class AdvancedPatternTradingBot:
 📈 <b>Price:</b> {event.price_change_pct:+.1f}%
 🕐 <b>Time:</b> {datetime.fromtimestamp(event.timestamp).strftime('%H:%M:%S UTC')}"""
 
-        # Add correlations
         correlations = analysis.get('correlations_found', [])
         if correlations:
             msg += f"\n\n🔗 <b>CORRELATIONS:</b>"
@@ -902,19 +904,16 @@ class AdvancedPatternTradingBot:
                 other_symbol = corr.symbol_pair[0] if corr.symbol_pair[1] == event.symbol else corr.symbol_pair[1]
                 msg += f"\n• {other_symbol}: {corr.correlation_type} ({corr.strength:.2f}, {corr.time_delay}min)"
 
-        # Add cascade risk
         cascade_risk = analysis.get('cascade_risk', {})
         if cascade_risk.get('cascade_risk_score', 0) > 0.5:
             msg += f"\n\n⚠️ <b>CASCADE RISK: {cascade_risk.get('risk_level', 'MEDIUM')}</b>"
             msg += f"\n• Recent pumps: {cascade_risk.get('recent_pumps', 0)}"
             msg += f"\n• Risk score: {cascade_risk['cascade_risk_score']:.2f}"
 
-        # Add market regime
         regime = analysis.get('market_regime', {}).get('regime', 'UNKNOWN')
         confidence = analysis.get('market_regime', {}).get('confidence', 0)
         msg += f"\n\n🏛️ <b>Regime:</b> {regime} ({confidence:.2f})"
 
-        # Add predictions
         predictions = analysis.get('predictions', [])
         if predictions:
             msg += f"\n\n🔮 <b>PREDICTIONS:</b>"
@@ -925,9 +924,7 @@ class AdvancedPatternTradingBot:
         return msg
     
     def run(self):
-        """Main execution method"""
         try:
-            # Initialize exchanges
             print("🏦 Initializing exchanges...")
             for exchange_name in self.exchanges_list:
                 exchange_name = exchange_name.strip()
@@ -951,31 +948,29 @@ class AdvancedPatternTradingBot:
             
             total_symbols = sum(len(symbols) for symbols in self.watchlist.values())
             
-            # Send startup notification
-            startup_msg = f"""🧬 <b>PATTERN CORRELATION BOT ONLINE</b>
+            startup_msg = f"""🧬 <b>BOT OTIMIZADO ONLINE</b>
 
 🏦 <b>Exchanges:</b> {', '.join(self.exchanges.keys())}
 📊 <b>Symbols:</b> {total_symbols} total
-🔬 <b>Analysis:</b> Real-time correlation detection
-🎯 <b>Features:</b> Cascade warnings, regime analysis
+🎯 <b>Min Strength:</b> {self.min_strength}/10
+⚙️ <b>Threshold:</b> {self.threshold}x volume
 
-Ready for pattern correlation analysis! 🚀"""
+✅ Validações agregadas em relatórios diários
+✅ Menos spam, mais qualidade!"""
             
             self.send_telegram(startup_msg)
             
-            # Start main loop
             self.run_correlation_analysis_loop()
             
         except KeyboardInterrupt:
             print("\n👋 Bot stopped")
             
             uptime_hours = (time.time() - self.stats['start_time']) / 3600
-            shutdown_msg = f"""👋 <b>CORRELATION BOT OFFLINE</b>
+            shutdown_msg = f"""👋 <b>BOT OFFLINE</b>
 
 📊 <b>Stats:</b> {uptime_hours:.1f}h runtime
 • Events: {self.stats['events_logged']}
-• Correlations: {self.stats['correlations_found']}
-• Predictions: {self.stats['predictions_made']}"""
+• Correlations: {self.stats['correlations_found']}"""
             
             self.send_telegram(shutdown_msg)
             
@@ -986,8 +981,7 @@ Ready for pattern correlation analysis! 🚀"""
             raise
     
     def run_correlation_analysis_loop(self):
-        """Main analysis loop"""
-        print("🔬 Starting correlation analysis...")
+        print("🔬 Starting optimized correlation analysis...")
         
         loop_count = 0
         
@@ -1008,7 +1002,7 @@ Ready for pattern correlation analysis! 🚀"""
                         ohlcv = self.fetch_ohlcv_safe(ex, symbol, self.timeframe, 20)
                         if not ohlcv or len(ohlcv) < 10:
                             continue
-                        # Calculate metrics
+                        
                         *hist, last = ohlcv
                         volumes = [c[5] for c in hist[-8:]]
                         vol_avg = sum(volumes) / len(volumes) if volumes else 0
@@ -1022,19 +1016,19 @@ Ready for pattern correlation analysis! 🚀"""
                             prev_close = hist[-1][4]
                             price_change_pct = (close_last - prev_close) / prev_close if prev_close > 0 else 0
                         
-                        # Apply detection thresholds
                         if vol_multiple < self.threshold or abs(price_change_pct) < self.min_price_change:
                             continue
                         
-                        # Calculate RSI
                         prices = [c[4] for c in ohlcv]
                         rsi = self.calculate_rsi(prices)
                         
-                        # Determine event type and strength
                         event_type = "PUMP" if price_change_pct > 0 else "DUMP"
                         event_strength = min(int((vol_multiple / 2 + abs(price_change_pct) * 20)), 10)
                         
-                        # Create market event
+                        # FILTRO CRÍTICO: Só processa se strength >= min_strength
+                        if event_strength < self.min_strength:
+                            continue
+                        
                         event = MarketEvent(
                             timestamp=int(time.time()),
                             exchange=exchange_name,
@@ -1046,10 +1040,8 @@ Ready for pattern correlation analysis! 🚀"""
                             event_strength=event_strength
                         )
                         
-                        # Process through correlation engine
                         analysis = self.correlation_engine.process_new_event(event)
                         
-                        # Update stats
                         self.stats['events_logged'] += 1
                         
                         if analysis['correlations_found']:
@@ -1061,28 +1053,35 @@ Ready for pattern correlation analysis! 🚀"""
                         if analysis['cascade_risk']['cascade_risk_score'] > 0.7:
                             self.stats['cascade_warnings'] += 1
                         
-                        # Determine alert conditions
+                        # CONDIÇÕES DE ALERTA OTIMIZADAS
                         should_alert = False
                         alert_key = f"CORRELATION:{exchange_name}:{symbol}"
                         
-                        if len(analysis['correlations_found']) >= 2:  # Multiple correlations
+                        # 1. Alerta forte isolado (sem correlações necessárias)
+                        if event_strength >= 8 and vol_multiple >= 5:
                             should_alert = True
-                            alert_key = f"MULTI_CORR:{exchange_name}:{symbol}"
-                        elif analysis['cascade_risk']['cascade_risk_score'] > 0.6:  # High cascade risk
+                            alert_key = f"STRONG:{exchange_name}:{symbol}"
+                        
+                        # 2. Correlações (menos restritivo)
+                        elif len(analysis['correlations_found']) >= 1:
+                            should_alert = True
+                            alert_key = f"CORR:{exchange_name}:{symbol}"
+                        
+                        # 3. Cascade risk alto
+                        elif analysis['cascade_risk']['cascade_risk_score'] > 0.6:
                             should_alert = True
                             alert_key = f"CASCADE:{analysis['cascade_risk']['risk_level']}"
-                        elif analysis['market_regime']['regime'] in ['PUMP_MANIPULATION', 'HIGH_MANIPULATION']:  # Manipulation
+                        
+                        # 4. Manipulação detectada
+                        elif analysis['market_regime']['regime'] in ['PUMP_MANIPULATION', 'HIGH_MANIPULATION']:
                             should_alert = True
-                            alert_key = f"MANIPULATION:{analysis['market_regime']['regime']}"
-                        elif len(analysis['predictions']) >= 2:  # Multiple predictions
-                            should_alert = True
-                            alert_key = f"PREDICTIONS:{exchange_name}:{symbol}"
+                            alert_key = f"MANIP:{analysis['market_regime']['regime']}"
                         
                         if should_alert and self.can_alert(alert_key, time.time()):
                             alert_message = self.generate_correlation_alert(event, analysis)
                             self.send_telegram(alert_message)
                             
-                            # ✅ ALTERAÇÃO 3: Registar alerta para validação
+                            # Registar para validação
                             alert_data = {
                                 'symbol': event.symbol,
                                 'exchange': event.exchange,
@@ -1099,17 +1098,13 @@ Ready for pattern correlation analysis! 🚀"""
                             self.validation_system.register_alert(alert_data)
                             
                             if self.debug_mode:
-                                print(f"[ALERT] {exchange_name} {symbol}: {event_type} {vol_multiple:.1f}x")
-                                print(f"  Correlations: {len(analysis['correlations_found'])}")
-                                print(f"  Cascade risk: {analysis['cascade_risk']['cascade_risk_score']:.2f}")
-                                print(f"[VALIDATION] Registered alert for tracking: {symbol}")
+                                print(f"[ALERT] {exchange_name} {symbol}: {event_type} {vol_multiple:.1f}x (Strength: {event_strength}/10)")
                     
                     except Exception as e:
                         if self.debug_mode:
                             print(f"Error processing {exchange_name} {symbol}: {e}")
                         continue
             
-            # Sleep with timing control
             elapsed = time.time() - loop_start
             sleep_time = max(0, self.sleep_seconds - elapsed)
             time.sleep(sleep_time)
@@ -1118,8 +1113,7 @@ Ready for pattern correlation analysis! 🚀"""
 #   MAIN EXECUTION
 # =========================
 def main():
-    """Main function"""
-    print("🧬 Advanced Pattern Correlation Bot Starting (Railway Compatible)...")
+    print("🧬 Advanced Pattern Correlation Bot Starting (Optimized Version)...")
     
     bot = AdvancedPatternTradingBot()
     bot.run()
