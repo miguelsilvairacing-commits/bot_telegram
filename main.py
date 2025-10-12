@@ -23,13 +23,11 @@ class AlertValidationSystem:
         self.pending_validations = []
         self.validation_results = []
         self.validation_lock = threading.Lock()
-        self.last_daily_report = 0  # Timestamp do último relatório diário
+        self.last_daily_report = 0
         
-        # Iniciar thread de validação
         self.validation_thread = threading.Thread(target=self._validation_loop, daemon=True)
         self.validation_thread.start()
         
-        # Carregar dados existentes
         self._load_existing_data()
         
         print("Alert Validation System initialized (Optimized)")
@@ -62,7 +60,7 @@ class AlertValidationSystem:
         """Loop que verifica periodicamente alertas pendentes"""
         while True:
             try:
-                time.sleep(300)  # Verifica a cada 5 minutos
+                time.sleep(300)
                 self._check_pending_validations()
                 self._check_daily_report()
             except Exception as e:
@@ -76,21 +74,17 @@ class AlertValidationSystem:
             for record in self.pending_validations[:]:
                 alert_time = record['timestamp']
                 
-                # Verificar 1h (silencioso)
                 if not record['validations']['1h']['checked'] and current_time >= alert_time + 3600:
                     self._validate_alert(record, '1h', notify=False)
                 
-                # Verificar 4h (só notifica se strength >= 8)
                 if not record['validations']['4h']['checked'] and current_time >= alert_time + 14400:
-                    notify_4h = record['strength'] >= 8
+                    notify_4h = record['strength'] >= 7
                     self._validate_alert(record, '4h', notify=notify_4h)
                 
-                # Verificar 24h (sempre notifica alertas importantes)
                 if not record['validations']['24h']['checked'] and current_time >= alert_time + 86400:
-                    notify_24h = record['strength'] >= 7
+                    notify_24h = record['strength'] >= 6
                     self._validate_alert(record, '24h', notify=notify_24h)
                     
-                    # Mover para resultados finais
                     self.validation_results.append(record)
                     self.pending_validations.remove(record)
                     self._save_results()
@@ -111,7 +105,6 @@ class AlertValidationSystem:
             initial_price = record['initial_price']
             price_change_pct = ((current_price - initial_price) / initial_price) * 100 if initial_price > 0 else 0
             
-            # Atualizar registro
             record['validations'][timeframe]['checked'] = True
             record['validations'][timeframe]['price'] = current_price
             record['validations'][timeframe]['price_change'] = price_change_pct
@@ -120,7 +113,6 @@ class AlertValidationSystem:
             result = self._classify_result(event_type, price_change_pct, timeframe)
             record['validations'][timeframe]['result'] = result
             
-            # Enviar notificação apenas se solicitado
             if notify:
                 self._send_validation_report(record, timeframe)
             
@@ -141,7 +133,7 @@ class AlertValidationSystem:
                 return "SMALL_REVERSAL"
             else:
                 return "DUMP_REVERSAL"
-        else:  # DUMP
+        else:
             if price_change_pct < -5:
                 return "SUSTAINED_DUMP"
             elif price_change_pct < 0:
@@ -152,7 +144,7 @@ class AlertValidationSystem:
                 return "PUMP_REVERSAL"
     
     def _send_validation_report(self, record: dict, timeframe: str):
-        """Envia relatório de validação individual (só alertas importantes)"""
+        """Envia relatório de validação individual"""
         
         validation = record['validations'][timeframe]
         
@@ -172,34 +164,27 @@ class AlertValidationSystem:
         
         success = result in ['SUSTAINED_PUMP', 'SUSTAINED_DUMP', 'WEAK_CONTINUATION']
         
-        msg = f"""📊 <b>VALIDAÇÃO [{timeframe}] - Alerta Importante</b>
+        msg = f"""📊 <b>VALIDAÇÃO [{timeframe}]</b>
 
-{'✅ ALERTA CONFIRMADO' if success else '❌ ALERTA FALHOU'}
+{'✅ CONFIRMADO' if success else '❌ FALHOU'}
 
 <b>🎯 {record['symbol']} ({record['exchange'].upper()})</b>
-📊 Tipo: {record['event_type']}
-⚡ Strength: {record['strength']}/10
-💹 Volume: {record['volume_multiple']:.1f}x
+📊 {record['event_type']} | ⚡ {record['strength']}/10
+💹 {record['volume_multiple']:.1f}x
 
-<b>💰 Resultado:</b>
 {emoji} <b>{result.replace('_', ' ')}</b>
-Inicial: ${record['initial_price']:.6f}
-Actual: ${validation['price']:.6f}
-Mudança: {validation['price_change']:+.2f}%
+${record['initial_price']:.6f} → ${validation['price']:.6f}
+{validation['price_change']:+.2f}%
 
-📈 <b>Accuracy Geral:</b> {accuracy['overall']:.1f}%
-• Validados: {accuracy['total_validated']} alertas"""
+📈 Accuracy: {accuracy['overall']:.1f}%"""
         
         self.bot.send_telegram(msg)
     
     def _check_daily_report(self):
         """Verifica se deve enviar relatório diário"""
         current_time = int(time.time())
-        
-        # Enviar relatório às 10:00 UTC (aproximadamente)
         current_hour = datetime.fromtimestamp(current_time).hour
         
-        # Se já passou 24h desde o último relatório e são 10h da manhã
         if (current_time - self.last_daily_report) >= 86400 and current_hour == 10:
             self._send_daily_report()
             self.last_daily_report = current_time
@@ -207,14 +192,12 @@ Mudança: {validation['price_change']:+.2f}%
     def _send_daily_report(self):
         """Envia relatório diário consolidado"""
         
-        # Pegar validações das últimas 24h
         cutoff = int(time.time()) - 86400
         recent_validations = [r for r in self.validation_results if r['timestamp'] > cutoff]
         
         if len(recent_validations) < 3:
-            return  # Não enviar se tiver poucos dados
+            return
         
-        # Calcular estatísticas
         pump_correct = 0
         pump_total = 0
         dump_correct = 0
@@ -233,7 +216,6 @@ Mudança: {validation['price_change']:+.2f}%
             event_type = record.get('event_type', 'UNKNOWN')
             price_change = val_4h.get('price_change', 0)
             
-            # Contar accuracy
             if event_type == 'PUMP':
                 pump_total += 1
                 if result in ['SUSTAINED_PUMP', 'WEAK_CONTINUATION']:
@@ -257,38 +239,33 @@ Mudança: {validation['price_change']:+.2f}%
         dump_accuracy = (dump_correct / dump_total * 100) if dump_total > 0 else 0
         overall = ((pump_correct + dump_correct) / (pump_total + dump_total) * 100) if (pump_total + dump_total) > 0 else 0
         
-        # Construir mensagem
-        msg = f"""📊 <b>RELATÓRIO DIÁRIO DE VALIDAÇÃO</b>
+        msg = f"""📊 <b>RELATÓRIO DIÁRIO</b>
 
-<b>🎯 Accuracy nas Últimas 24h:</b>
+<b>🎯 Accuracy 24h:</b>
 • Overall: {overall:.1f}% ({pump_correct + dump_correct}/{pump_total + dump_total})
 • Pumps: {pump_accuracy:.1f}% ({pump_correct}/{pump_total})
 • Dumps: {dump_accuracy:.1f}% ({dump_correct}/{dump_total})
 
-<b>📈 Total Validado:</b> {len(self.validation_results)} alertas"""
+<b>📈 Total:</b> {len(self.validation_results)} alertas"""
         
-        # Melhores alertas
         if best_alerts:
             best_alerts.sort(key=lambda x: abs(x[1]), reverse=True)
-            msg += "\n\n<b>✅ TOP 3 Melhores Alertas:</b>"
+            msg += "\n\n<b>✅ TOP 3:</b>"
             for record, change in best_alerts[:3]:
-                msg += f"\n• {record['symbol']}: {change:+.1f}% ({record['event_type']})"
+                msg += f"\n• {record['symbol']}: {change:+.1f}%"
         
-        # Piores alertas
         if worst_alerts:
             worst_alerts.sort(key=lambda x: abs(x[1]), reverse=True)
-            msg += "\n\n<b>❌ TOP 3 Piores Alertas:</b>"
+            msg += "\n\n<b>❌ PIORES:</b>"
             for record, change in worst_alerts[:3]:
-                msg += f"\n• {record['symbol']}: {change:+.1f}% (previsto {record['event_type']})"
-        
-        msg += f"\n\n🕐 {datetime.now().strftime('%d/%m/%Y %H:%M UTC')}"
+                msg += f"\n• {record['symbol']}: {change:+.1f}%"
         
         self.bot.send_telegram(msg)
     
     def _calculate_accuracy(self) -> dict:
-        """Calcula accuracy geral do sistema"""
+        """Calcula accuracy geral"""
         
-        if len(self.validation_results) < 10:
+        if len(self.validation_results) < 5:
             return {
                 'overall': 0.0,
                 'pump': 0.0,
@@ -331,7 +308,6 @@ Mudança: {validation['price_change']:+.2f}%
         }
     
     def _save_pending_validations(self):
-        """Salva validações pendentes"""
         try:
             validation_file = os.path.join(self.bot.db.data_dir, "pending_validations.json")
             with open(validation_file, 'w') as f:
@@ -340,7 +316,6 @@ Mudança: {validation['price_change']:+.2f}%
             print(f"[VALIDATION] Error saving pending: {e}")
     
     def _save_results(self):
-        """Salva resultados finais"""
         try:
             results_file = os.path.join(self.bot.db.data_dir, "validation_results.json")
             with open(results_file, 'w') as f:
@@ -349,7 +324,6 @@ Mudança: {validation['price_change']:+.2f}%
             print(f"[VALIDATION] Error saving results: {e}")
     
     def _load_existing_data(self):
-        """Carrega dados existentes"""
         try:
             validation_file = os.path.join(self.bot.db.data_dir, "pending_validations.json")
             if os.path.exists(validation_file):
@@ -369,8 +343,6 @@ Mudança: {validation['price_change']:+.2f}%
 #   FILE-BASED DATABASE
 # =========================
 class FileBasedPatternDB:
-    """File-based database using JSON"""
-    
     def __init__(self, data_dir="pattern_data"):
         self.data_dir = data_dir
         self.ensure_data_dir()
@@ -519,8 +491,6 @@ class CorrelationPattern:
     sample_size: int
 
 class PatternCorrelationEngine:
-    """Advanced engine for detecting market correlation patterns"""
-    
     def __init__(self, db: FileBasedPatternDB):
         self.db = db
         self.active_events = deque(maxlen=500)
@@ -736,10 +706,10 @@ class PatternCorrelationEngine:
         return predictions
 
 # =========================
-#   ENHANCED TRADING BOT (OPTIMIZED)
+#   ENHANCED TRADING BOT (SUPER SIMPLIFICADO)
 # =========================
 class AdvancedPatternTradingBot:
-    """Trading bot optimized for more useful alerts and less spam"""
+    """Trading bot com alertas SIMPLES - strength >= 5 = ALERTA!"""
     
     def __init__(self):
         self.db = FileBasedPatternDB()
@@ -750,16 +720,15 @@ class AdvancedPatternTradingBot:
         self.watchlist = {}
         self.last_alert_ts = defaultdict(lambda: 0.0)
         
-        # Configuration
         self.exchanges_list = os.getenv("EXCHANGES", "binance,bingx").split(",")
         self.quote_filter = os.getenv("QUOTE_FILTER", "USDT").split(",")
         self.top_n_by_volume = int(os.getenv("TOP_N_BY_VOLUME", "50"))
         self.timeframe = os.getenv("TIMEFRAME", "1m")
-        self.threshold = float(os.getenv("THRESHOLD", "2.5"))
-        self.min_price_change = float(os.getenv("MIN_PRICE_CHANGE", "0.03"))
+        self.threshold = float(os.getenv("THRESHOLD", "2.0"))
+        self.min_price_change = float(os.getenv("MIN_PRICE_CHANGE", "0.02"))
         self.sleep_seconds = int(os.getenv("SLEEP_SECONDS", "20"))
-        self.cooldown_minutes = int(os.getenv("COOLDOWN_MINUTES", "10"))
-        self.min_strength = int(os.getenv("MIN_STRENGTH", "5"))  # NOVO
+        self.cooldown_minutes = int(os.getenv("COOLDOWN_MINUTES", "8"))
+        self.min_strength = int(os.getenv("MIN_STRENGTH", "5"))
         self.debug_mode = os.getenv("DEBUG_MODE", "true").lower() == "true"
         
         self.tg_token = os.getenv("TG_TOKEN", "")
@@ -768,18 +737,17 @@ class AdvancedPatternTradingBot:
         self.stats = {
             'events_logged': 0,
             'correlations_found': 0,
-            'predictions_made': 0,
-            'cascade_warnings': 0,
+            'alerts_sent': 0,
             'start_time': time.time()
         }
         
         print(f"Bot initialized - Threshold: {self.threshold}, MinStrength: {self.min_strength}")
+        print("🎯 MODO SIMPLES: Alerta TUDO com strength >= 5")
     
     def send_telegram(self, msg: str):
         if not self.tg_token or not self.tg_chat_id:
             if self.debug_mode:
-                print("[Telegram] Not configured. Message:")
-                print(msg)
+                print("[Telegram] Not configured")
             return
 
         try:
@@ -887,39 +855,25 @@ class AdvancedPatternTradingBot:
             return True
         return False
     
-    def generate_correlation_alert(self, event: MarketEvent, analysis: Dict) -> str:
-        msg = f"""🧬 <b>PATTERN CORRELATION DETECTED</b>
+    def generate_simple_alert(self, event: MarketEvent, analysis: Dict) -> str:
+        """Alerta SIMPLES - foco no que importa"""
+        
+        msg = f"""🚨 <b>{event.event_type} DETECTADO</b>
 
-🎯 <b>Event:</b> {event.symbol} ({event.exchange.upper()})
-📊 <b>Type:</b> {event.event_type}
-⚡ <b>Strength:</b> {event.event_strength}/10
-💹 <b>Volume:</b> {event.volume_multiple:.1f}x
-📈 <b>Price:</b> {event.price_change_pct:+.1f}%
-🕐 <b>Time:</b> {datetime.fromtimestamp(event.timestamp).strftime('%H:%M:%S UTC')}"""
+🎯 <b>{event.symbol}</b> ({event.exchange.upper()})
+⚡ <b>Strength: {event.event_strength}/10</b>
+💹 Volume: {event.volume_multiple:.1f}x médio
+📈 Preço: {event.price_change_pct:+.1f}%
+🕐 {datetime.fromtimestamp(event.timestamp).strftime('%H:%M:%S')}"""
 
+        # Só adiciona extras se existirem
         correlations = analysis.get('correlations_found', [])
         if correlations:
-            msg += f"\n\n🔗 <b>CORRELATIONS:</b>"
-            for corr in correlations[:3]:
-                other_symbol = corr.symbol_pair[0] if corr.symbol_pair[1] == event.symbol else corr.symbol_pair[1]
-                msg += f"\n• {other_symbol}: {corr.correlation_type} ({corr.strength:.2f}, {corr.time_delay}min)"
+            msg += f"\n\n🔗 Correlação com {correlations[0].symbol_pair[0]}"
 
-        cascade_risk = analysis.get('cascade_risk', {})
-        if cascade_risk.get('cascade_risk_score', 0) > 0.5:
-            msg += f"\n\n⚠️ <b>CASCADE RISK: {cascade_risk.get('risk_level', 'MEDIUM')}</b>"
-            msg += f"\n• Recent pumps: {cascade_risk.get('recent_pumps', 0)}"
-            msg += f"\n• Risk score: {cascade_risk['cascade_risk_score']:.2f}"
-
-        regime = analysis.get('market_regime', {}).get('regime', 'UNKNOWN')
-        confidence = analysis.get('market_regime', {}).get('confidence', 0)
-        msg += f"\n\n🏛️ <b>Regime:</b> {regime} ({confidence:.2f})"
-
-        predictions = analysis.get('predictions', [])
-        if predictions:
-            msg += f"\n\n🔮 <b>PREDICTIONS:</b>"
-            for pred in predictions[:2]:
-                pred_time = datetime.fromtimestamp(pred['predicted_time'])
-                msg += f"\n• {pred['type']}: {pred_time.strftime('%H:%M')} ({pred['confidence']:.2f})"
+        cascade = analysis.get('cascade_risk', {})
+        if cascade.get('cascade_risk_score', 0) > 0.5:
+            msg += f"\n⚠️ Cascade Risk: {cascade['risk_level']}"
 
         return msg
     
@@ -948,19 +902,17 @@ class AdvancedPatternTradingBot:
             
             total_symbols = sum(len(symbols) for symbols in self.watchlist.values())
             
-            startup_msg = f"""🧬 <b>BOT OTIMIZADO ONLINE</b>
+            startup_msg = f"""🚨 <b>BOT SIMPLIFICADO ONLINE</b>
 
-🏦 <b>Exchanges:</b> {', '.join(self.exchanges.keys())}
-📊 <b>Symbols:</b> {total_symbols} total
-🎯 <b>Min Strength:</b> {self.min_strength}/10
-⚙️ <b>Threshold:</b> {self.threshold}x volume
+🏦 {', '.join(self.exchanges.keys())}
+📊 {total_symbols} moedas
+🎯 <b>Regra: Strength >= {self.min_strength} = ALERTA!</b>
 
-✅ Validações agregadas em relatórios diários
-✅ Menos spam, mais qualidade!"""
+Vais receber TODOS os pumps/dumps relevantes! 🔥"""
             
             self.send_telegram(startup_msg)
             
-            self.run_correlation_analysis_loop()
+            self.run_simple_loop()
             
         except KeyboardInterrupt:
             print("\n👋 Bot stopped")
@@ -968,9 +920,8 @@ class AdvancedPatternTradingBot:
             uptime_hours = (time.time() - self.stats['start_time']) / 3600
             shutdown_msg = f"""👋 <b>BOT OFFLINE</b>
 
-📊 <b>Stats:</b> {uptime_hours:.1f}h runtime
-• Events: {self.stats['events_logged']}
-• Correlations: {self.stats['correlations_found']}"""
+⏱️ {uptime_hours:.1f}h runtime
+📊 {self.stats['alerts_sent']} alertas enviados"""
             
             self.send_telegram(shutdown_msg)
             
@@ -980,8 +931,9 @@ class AdvancedPatternTradingBot:
             self.send_telegram(error_msg)
             raise
     
-    def run_correlation_analysis_loop(self):
-        print("🔬 Starting optimized correlation analysis...")
+    def run_simple_loop(self):
+        """Loop SIMPLIFICADO - alerta tudo relevante"""
+        print("🔬 Starting SIMPLE alert system...")
         
         loop_count = 0
         
@@ -991,8 +943,7 @@ class AdvancedPatternTradingBot:
             
             if self.debug_mode and loop_count % 20 == 0:
                 uptime = (time.time() - self.stats['start_time']) / 3600
-                print(f"[STATS] Loop #{loop_count}, {uptime:.1f}h uptime")
-                print(f"  Events: {self.stats['events_logged']}, Correlations: {self.stats['correlations_found']}")
+                print(f"[STATS] Loop #{loop_count}, {uptime:.1f}h | Alertas: {self.stats['alerts_sent']}")
             
             for exchange_name, ex in self.exchanges.items():
                 symbols = self.watchlist.get(exchange_name, [])
@@ -1016,6 +967,7 @@ class AdvancedPatternTradingBot:
                             prev_close = hist[-1][4]
                             price_change_pct = (close_last - prev_close) / prev_close if prev_close > 0 else 0
                         
+                        # Thresholds básicos
                         if vol_multiple < self.threshold or abs(price_change_pct) < self.min_price_change:
                             continue
                         
@@ -1025,7 +977,7 @@ class AdvancedPatternTradingBot:
                         event_type = "PUMP" if price_change_pct > 0 else "DUMP"
                         event_strength = min(int((vol_multiple / 2 + abs(price_change_pct) * 20)), 10)
                         
-                        # FILTRO CRÍTICO: Só processa se strength >= min_strength
+                        # FILTRO: Só processa se strength >= min_strength
                         if event_strength < self.min_strength:
                             continue
                         
@@ -1041,45 +993,15 @@ class AdvancedPatternTradingBot:
                         )
                         
                         analysis = self.correlation_engine.process_new_event(event)
-                        
                         self.stats['events_logged'] += 1
                         
-                        if analysis['correlations_found']:
-                            self.stats['correlations_found'] += len(analysis['correlations_found'])
+                        # 🎯 REGRA SIMPLES: Strength >= min_strength = ALERTA!
+                        alert_key = f"{exchange_name}:{symbol}"
                         
-                        if analysis['predictions']:
-                            self.stats['predictions_made'] += len(analysis['predictions'])
-                        
-                        if analysis['cascade_risk']['cascade_risk_score'] > 0.7:
-                            self.stats['cascade_warnings'] += 1
-                        
-                        # CONDIÇÕES DE ALERTA OTIMIZADAS
-                        should_alert = False
-                        alert_key = f"CORRELATION:{exchange_name}:{symbol}"
-                        
-                        # 1. Alerta forte isolado (sem correlações necessárias)
-                        if event_strength >= 8 and vol_multiple >= 5:
-                            should_alert = True
-                            alert_key = f"STRONG:{exchange_name}:{symbol}"
-                        
-                        # 2. Correlações (menos restritivo)
-                        elif len(analysis['correlations_found']) >= 1:
-                            should_alert = True
-                            alert_key = f"CORR:{exchange_name}:{symbol}"
-                        
-                        # 3. Cascade risk alto
-                        elif analysis['cascade_risk']['cascade_risk_score'] > 0.6:
-                            should_alert = True
-                            alert_key = f"CASCADE:{analysis['cascade_risk']['risk_level']}"
-                        
-                        # 4. Manipulação detectada
-                        elif analysis['market_regime']['regime'] in ['PUMP_MANIPULATION', 'HIGH_MANIPULATION']:
-                            should_alert = True
-                            alert_key = f"MANIP:{analysis['market_regime']['regime']}"
-                        
-                        if should_alert and self.can_alert(alert_key, time.time()):
-                            alert_message = self.generate_correlation_alert(event, analysis)
+                        if self.can_alert(alert_key, time.time()):
+                            alert_message = self.generate_simple_alert(event, analysis)
                             self.send_telegram(alert_message)
+                            self.stats['alerts_sent'] += 1
                             
                             # Registar para validação
                             alert_data = {
@@ -1098,11 +1020,11 @@ class AdvancedPatternTradingBot:
                             self.validation_system.register_alert(alert_data)
                             
                             if self.debug_mode:
-                                print(f"[ALERT] {exchange_name} {symbol}: {event_type} {vol_multiple:.1f}x (Strength: {event_strength}/10)")
+                                print(f"[ALERT #{self.stats['alerts_sent']}] {symbol}: {event_type} {event_strength}/10")
                     
                     except Exception as e:
                         if self.debug_mode:
-                            print(f"Error processing {exchange_name} {symbol}: {e}")
+                            print(f"Error: {exchange_name} {symbol}: {e}")
                         continue
             
             elapsed = time.time() - loop_start
@@ -1110,10 +1032,10 @@ class AdvancedPatternTradingBot:
             time.sleep(sleep_time)
 
 # =========================
-#   MAIN EXECUTION
+#   MAIN
 # =========================
 def main():
-    print("🧬 Advanced Pattern Correlation Bot Starting (Optimized Version)...")
+    print("🚨 Simple Alert Bot Starting...")
     
     bot = AdvancedPatternTradingBot()
     bot.run()
