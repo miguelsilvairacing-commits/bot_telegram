@@ -729,26 +729,47 @@ class AdvancedPatternTradingBot:
                 print(f"❌ Failed to initialize {exchange_name}: {e}")
     
     def _btc_tracker_loop(self):
-        """Monitora BTC/USDT continuamente"""
-        print("[BTC Tracker] Starting...")
-        
-        # Aguarda exchanges estarem prontas
-        while 'binance' not in self.exchanges:
-            time.sleep(5)
-        
-        while True:
-            try:
-                # Usa Binance para BTC (mais líquido)
-                if 'binance' in self.exchanges:
-                    ex = self.exchanges['binance']
-                    
-                    # Fetch ticker e OHLCV para volume
-                    ticker = ex.fetch_ticker('BTC/USDT')
+    """Monitora BTC/USDT continuamente"""
+    print("[BTC Tracker] Starting...")
+    
+    # Aguarda exchanges estarem prontas
+    attempts = 0
+    while 'binance' not in self.exchanges or not self.exchanges.get('binance'):
+        time.sleep(2)
+        attempts += 1
+        if attempts > 30:
+            print("[BTC Tracker] ERROR: Binance not available!")
+            return
+        if attempts % 5 == 0:
+            print(f"[BTC Tracker] Waiting for Binance... ({attempts*2}s)")
+    
+    print("[BTC Tracker] Binance ready, starting monitoring...")
+    
+    # Inicializa com dados reais
+    try:
+        ex = self.exchanges['binance']
+        ticker = ex.fetch_ticker('BTC/USDT')
+        self.btc_data['last_price'] = ticker['last']
+        print(f"[BTC Tracker] Initial BTC price: ${ticker['last']:.0f}")
+    except Exception as e:
+        print(f"[BTC Tracker] Init error: {e}")
+    
+    while True:
+        try:
+            if 'binance' in self.exchanges:
+                ex = self.exchanges['binance']
+                
+                # Fetch ticker para preço
+                ticker = ex.fetch_ticker('BTC/USDT')
+                current_price = ticker['last']
+                current_time = int(time.time())
+                
+                # CORREÇÃO: Usar 'quoteVolume' em vez de 'quoteVolume24h'
+                current_volume = ticker.get('quoteVolume', 0)  # Campo correto!
+                
+                # Fetch OHLCV para volume spike
+                try:
                     ohlcv = ex.fetch_ohlcv('BTC/USDT', '1m', 10)
-                    
-                    current_price = ticker['last']
-                    current_time = int(time.time())
-                    current_volume = ticker['quoteVolume24h']
                     
                     # Calcula volume spike
                     if len(ohlcv) >= 5:
@@ -756,52 +777,50 @@ class AdvancedPatternTradingBot:
                         avg_volume = sum(volumes) / len(volumes)
                         last_volume = ohlcv[-1][5] if ohlcv else current_volume
                         self.btc_data['volume_spike'] = last_volume / avg_volume if avg_volume > 0 else 1.0
-                    
-                    # Adiciona à história
-                    self.btc_data['history'].append({
-                        'price': current_price,
-                        'timestamp': current_time,
-                        'volume': current_volume
-                    })
-                    
-                    # Calcula mudanças
-                    if len(self.btc_data['history']) > 1:
-                        # 5min ago
-                        time_5m_ago = current_time - 300
-                        price_5m_data = next((h for h in reversed(list(self.btc_data['history'])) 
-                                            if h['timestamp'] <= time_5m_ago), None)
-                        if price_5m_data:
-                            price_5m_ago = price_5m_data['price']
-                            self.btc_data['change_5m'] = ((current_price - price_5m_ago) / price_5m_ago) * 100
-                        
-                        # 15min ago  
-                        time_15m_ago = current_time - 900
-                        price_15m_data = next((h for h in reversed(list(self.btc_data['history']))
-                                             if h['timestamp'] <= time_15m_ago), None)
-                        if price_15m_data:
-                            price_15m_ago = price_15m_data['price']
-                            self.btc_data['change_15m'] = ((current_price - price_15m_ago) / price_15m_ago) * 100
-                        
-                        # Determina trend
-                        if self.btc_data['change_5m'] > 0.8:
-                            self.btc_data['trend'] = 'UP'
-                        elif self.btc_data['change_5m'] < -0.8:
-                            self.btc_data['trend'] = 'DOWN'
-                        else:
-                            self.btc_data['trend'] = 'LATERAL'
-                    
-                    self.btc_data['last_price'] = current_price
-                    self.btc_data['last_update'] = current_time
-                    self.btc_data['last_volume'] = current_volume
-                    
-                    if self.debug_mode and current_time % 300 == 0:  # Log a cada 5min
-                        print(f"[BTC] ${current_price:.0f} | 5m: {self.btc_data['change_5m']:+.2f}% | Trend: {self.btc_data['trend']}")
-                    
-                time.sleep(20)  # Update a cada 20s
+                except Exception as e:
+                    # Se falhar OHLCV, continua sem volume spike
+                    self.btc_data['volume_spike'] = 1.0
                 
-            except Exception as e:
-                print(f"[BTC Tracker] Error: {e}")
-                time.sleep(30)
+                # Adiciona à história
+                self.btc_data['history'].append({
+                    'price': current_price,
+                    'timestamp': current_time,
+                    'volume': current_volume
+                })
+                
+                # Calcula mudanças apenas se tiver história suficiente
+                if len(self.btc_data['history']) >= 2:
+                    # 5min ago (15 pontos com updates de 20s)
+                    if len(self.btc_data['history']) >= 15:
+                        price_5m_ago = self.btc_data['history'][-15]['price']
+                        self.btc_data['change_5m'] = ((current_price - price_5m_ago) / price_5m_ago) * 100
+                    
+                    # 15min ago (45 pontos com updates de 20s)
+                    if len(self.btc_data['history']) >= 45:
+                        price_15m_ago = self.btc_data['history'][-45]['price']
+                        self.btc_data['change_15m'] = ((current_price - price_15m_ago) / price_15m_ago) * 100
+                    
+                    # Determina trend baseado em 5min
+                    if self.btc_data['change_5m'] > 0.8:
+                        self.btc_data['trend'] = 'UP'
+                    elif self.btc_data['change_5m'] < -0.8:
+                        self.btc_data['trend'] = 'DOWN'
+                    else:
+                        self.btc_data['trend'] = 'LATERAL'
+                
+                self.btc_data['last_price'] = current_price
+                self.btc_data['last_update'] = current_time
+                self.btc_data['last_volume'] = current_volume
+                
+                # Log a cada 5min em debug
+                if self.debug_mode and len(self.btc_data['history']) % 15 == 0:
+                    print(f"[BTC] ${current_price:.0f} | 5m: {self.btc_data['change_5m']:+.2f}% | Trend: {self.btc_data['trend']}")
+            
+            time.sleep(20)  # Update a cada 20s
+            
+        except Exception as e:
+            print(f"[BTC Tracker] Error: {e}")
+            time.sleep(30)
     
     def should_process_symbol(self, symbol: str) -> bool:
         """Verifica se o símbolo deve ser processado (blacklist check)"""
