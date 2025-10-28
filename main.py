@@ -1,7 +1,19 @@
 # =========================================================================================
-#   CRYPTO ML BOT v2.2 - BTC TRACKING FIXED + RAILWAY BLACKLIST! 🚀
+#   CRYPTO ML BOT v2.2.1 - TEST ALERTS + BTC TRACKING! 🚀🧪
 # =========================================================================================
 # 
+# ✅ NOVIDADES v2.2.1:
+#
+# 🧪 TEST ALERTS SYSTEM:
+#    - Envia alertas de TESTE ao Telegram a cada X minutos
+#    - Mostra status BTC atual + formato de alerta esperado
+#    - Valida que mensagens incluem contexto BTC corretamente
+#    - Controle via Railway variables (liga/desliga facilmente)
+#
+# 🔧 RAILWAY VARIABLES:
+#    FORCE_TEST_ALERTS="true"      # Ativa alertas de teste
+#    TEST_ALERT_INTERVAL="300"     # Intervalo em segundos (300 = 5 min)
+#
 # ✅ CORREÇÕES APLICADAS (v2.1 → v2.2):
 # 
 # 1. 🚫 BLACKLIST DO RAILWAY:
@@ -755,6 +767,14 @@ class AdvancedPatternTradingBot:
         self.tg_token = os.getenv("TG_TOKEN", "")
         self.tg_chat_id = os.getenv("TG_CHAT_ID", "")
         
+        # NOVO v2.2.1: Test Alerts System
+        self.force_test_alerts = os.getenv("FORCE_TEST_ALERTS", "false").lower() == "true"
+        self.test_alert_interval = int(os.getenv("TEST_ALERT_INTERVAL", "300"))  # 5 min default
+        self.last_test_alert = 0
+        
+        if self.force_test_alerts:
+            print(f"🧪 TEST ALERTS ENABLED - Interval: {self.test_alert_interval}s ({self.test_alert_interval//60} min)")
+        
         self.stats = {
             'alerts_sent': 0,
             'btc_followers_filtered': 0,
@@ -908,6 +928,97 @@ class AdvancedPatternTradingBot:
             )
         except Exception as e:
             print(f"[Telegram] Error: {e}")
+    
+    def _send_test_alert(self):
+        """Envia alerta de TESTE com BTC context atual - v2.2.1"""
+        
+        btc_price = self.btc_data['last_price']
+        btc_5m = self.btc_data['change_5m']
+        btc_15m = self.btc_data['change_15m']
+        btc_trend = self.btc_data['trend']
+        history_points = len(self.btc_data['history'])
+        
+        # Determina movimento simulado baseado no BTC real
+        if abs(btc_5m) < 0.2:
+            movement_type = "INDEPENDENT"
+            movement_emoji = "🎯"
+            movement_desc = "Movimento independente de BTC"
+        elif btc_5m > 0.3:
+            movement_type = "FOLLOWING BTC"
+            movement_emoji = "📊"
+            movement_desc = "Seguindo pump do BTC"
+        elif btc_5m < -0.3:
+            movement_type = "COUNTER TO BTC"
+            movement_emoji = "⚔️"
+            movement_desc = "Contra movimento do BTC"
+        else:
+            movement_type = "INDEPENDENT"
+            movement_emoji = "🎯"
+            movement_desc = "BTC lateral, movimento próprio"
+        
+        # Simula preço de alerta baseado no BTC
+        simulated_price_change = btc_5m + 1.5  # Sempre +1.5% acima do BTC
+        
+        msg = f"""🧪 <b>ALERTA DE TESTE - BTC TRACKER v2.2.1</b>
+
+━━━━━━━━━━━━━━━━━━━━━━━━
+<b>₿ BTC STATUS ATUAL:</b>
+━━━━━━━━━━━━━━━━━━━━━━━━
+
+💰 Preço: ${btc_price:.0f}
+📊 5min: {btc_5m:+.2f}%
+📊 15min: {btc_15m:+.2f}%
+🎯 Trend: <b>{btc_trend}</b>
+📈 Dados: {history_points} pontos
+
+━━━━━━━━━━━━━━━━━━━━━━━━
+<b>📝 FORMATO DE ALERTA REAL:</b>
+━━━━━━━━━━━━━━━━━━━━━━━━
+
+Se receberes um PUMP agora, virá assim:
+
+🚨 <b>PUMP DETECTADO</b>
+
+🎯 <b>ETH/USDT</b> (BINANCE)
+⚡ <b>Strength: 8/10</b>
+💹 Volume: 15.5x médio
+📈 Preço: {simulated_price_change:+.1f}%"""
+
+        # Adiciona contexto BTC SE BTC estiver a mover
+        if abs(btc_5m) > 0.3:
+            relative_strength = simulated_price_change - btc_5m
+            msg += f"\n\n₿ BTC: {btc_5m:+.1f}% ({btc_trend})"
+            
+            if abs(relative_strength) > 1:
+                if relative_strength > 0:
+                    msg += f"\n💪 Outperforming BTC! (+{abs(relative_strength):.1f}%)"
+                else:
+                    msg += f"\n⚠️ Underperforming BTC ({relative_strength:.1f}%)"
+            else:
+                msg += f"\n📊 Following BTC"
+        else:
+            msg += f"\n\n{movement_emoji} <b>{movement_type}</b>"
+            msg += f"\n💭 {movement_desc}"
+        
+        msg += f"\n🕐 {datetime.now().strftime('%H:%M:%S')}"
+        
+        msg += f"""
+
+━━━━━━━━━━━━━━━━━━━━━━━━
+<b>🔍 INTERPRETAÇÃO:</b>
+━━━━━━━━━━━━━━━━━━━━━━━━
+
+• BTC {btc_trend}: {'Mercado volátil' if abs(btc_5m) > 0.3 else 'Mercado calmo'}
+• Contexto BTC: {'VISÍVEL nos alertas' if abs(btc_5m) > 0.3 else 'Não aparece (BTC lateral)'}
+• Movimentos <0.3%: Considerados LATERAL
+• Próximo teste: {self.test_alert_interval//60} minutos
+
+━━━━━━━━━━━━━━━━━━━━━━━━
+🧪 Isto é um TESTE automático
+⏰ Para desativar: FORCE_TEST_ALERTS=false"""
+        
+        self.send_telegram(msg)
+        print(f"[TEST] Alerta de teste enviado | BTC: {btc_5m:+.2f}% ({btc_trend})")
     
     def build_exchange(self, name: str):
         name = name.strip().lower()
@@ -1099,6 +1210,13 @@ Aguarda validações para ML! 🔥"""
         while True:
             loop_start = time.time()
             loop_count += 1
+            
+            # NOVO v2.2.1: Test Alerts System
+            if self.force_test_alerts:
+                current_time = time.time()
+                if current_time - self.last_test_alert >= self.test_alert_interval:
+                    self._send_test_alert()
+                    self.last_test_alert = current_time
             
             if self.debug_mode and loop_count % 50 == 0:
                 uptime = (time.time() - self.stats['start_time']) / 3600
