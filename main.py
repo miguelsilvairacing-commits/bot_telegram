@@ -1172,13 +1172,14 @@ Se receberes um PUMP agora, virá assim:
             total_symbols = sum(len(s) for s in self.watchlist.values())
             blacklisted = len(SYMBOLS_BLACKLIST)
             
-            startup_msg = f"""🚀 <b>BOT INICIADO - ML DATA COLLECTION v2.1</b>
+            startup_msg = f"""🚀 <b>BOT INICIADO - ML DATA COLLECTION v2.2.1</b> 🧪
 
 🏦 {', '.join(self.exchanges.keys())}
 📊 {total_symbols} moedas monitorizadas
 ⛔ {blacklisted} símbolos na blacklist
 
 ₿ <b>BTC Tracking:</b> ACTIVO
+🧪 <b>Test Alerts:</b> {'ACTIVO' if self.force_test_alerts else 'DESATIVADO'}
 🎯 <b>Objectivo:</b> 150-200 alertas limpos
 📊 <b>Sistema:</b> Alertas + BTC context + Validações 4h
 📈 <b>Próximo:</b> Machine Learning com features BTC
@@ -1351,10 +1352,11 @@ Aguarda validações para ML! 🔥"""
 #   MAIN
 # =========================
 def main():
-    print("🚀 ML Data Collection Bot v2.1 Starting...")
+    print("🚀 ML Data Collection Bot v2.2.1 Starting... 🧪")
     print("📊 Goal: Clean dataset with BTC context")
     print("₿ BTC Tracking: ENABLED")
     print("⛔ Blacklist: ACTIVE")
+    print("🧪 Test Alerts: Check Railway variables")
     print("🧠 Next: Machine Learning with rich features")
     
     bot = AdvancedPatternTradingBot()
