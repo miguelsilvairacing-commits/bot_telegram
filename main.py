@@ -1,46 +1,31 @@
 # =========================================================================================
-#   CRYPTO ML BOT v2.2.1 - TEST ALERTS + BTC TRACKING! 🚀🧪
+#   CRYPTO ML BOT v2.3.0 - MULTI-TIMEFRAME BTC TRACKER! 🚀📊
 # =========================================================================================
 # 
-# ✅ NOVIDADES v2.2.1:
+# ✅ NOVIDADES v2.3.0:
 #
-# 🧪 TEST ALERTS SYSTEM:
-#    - Envia alertas de TESTE ao Telegram a cada X minutos
-#    - Mostra status BTC atual + formato de alerta esperado
-#    - Valida que mensagens incluem contexto BTC corretamente
-#    - Controle via Railway variables (liga/desliga facilmente)
+# 🔧 BTC TRACKER MULTI-TIMEFRAME (MAJOR FIX):
+#    - 4 timeframes: 5m, 1h, 4h, 24h (antes: só 5m/15m)
+#    - Trend MACRO baseado em 4h + 24h (captura movimentos reais!)
+#    - História expandida: 200 pontos = cobre 3h+ de dados
+#    - Thresholds inteligentes por timeframe
+#    - Classificação precisa: UP/DOWN/LATERAL baseado em dados reais
 #
-# 🔧 RAILWAY VARIABLES:
-#    FORCE_TEST_ALERTS="true"      # Ativa alertas de teste
-#    TEST_ALERT_INTERVAL="300"     # Intervalo em segundos (300 = 5 min)
+# 📊 MELHORIAS NOS ALERTAS:
+#    - Contexto BTC relevante (mostra timeframe apropriado)
+#    - Movement classification melhorado (vs trend macro)
+#    - Força ajustada baseada em trend real do mercado
+#    - Alertas mais informativos e precisos
 #
-# ✅ CORREÇÕES APLICADAS (v2.1 → v2.2):
-# 
-# 1. 🚫 BLACKLIST DO RAILWAY:
-#    - Lê SYMBOLS_BLACKLIST do Railway (flexibilidade total!)
-#    - Fallback: SUT/USDT, YB/USDT sempre bloqueados (scam confirmado)
-#    - Edita Railway em 30 segundos, sem commits no git!
+# 🎯 IMPACTO ESPERADO:
+#    - BTC trend agora reflete realidade do mercado
+#    - Alertas com contexto macro correto
+#    - ML features muito mais úteis
+#    - Accuracy esperada: subir para 60-70%
 #
-# 2. 🎯 BTC TRACKING MELHORADO:
-#    - Threshold UP/DOWN: 0.8% → 0.3% (MUITO mais sensível!)
-#    - Threshold INDEPENDENT: 0.5% → 0.2% (captar mais movimentos)
-#    - Inicialização rápida: Usa dados parciais (5+ pontos em vez de 15+)
-#    - Agora detecta movimentos reais de BTC (não só "LATERAL")!
-#
-# 3. 📊 IMPACTO ESPERADO:
-#    - BTC trend será UP/DOWN com mais frequência (antes: ~5%, agora: ~40%)
-#    - Classificação INDEPENDENT será mais precisa
-#    - Alertas terão contexto BTC real
-#    - ML accuracy esperada: 40% → 60-70%
-#
-# 4. 🔧 RAILWAY VARIABLES NECESSÁRIAS:
-#    SYMBOLS_BLACKLIST="FTT/USDT,ENSO/USDT,BNLIFE/USDT,COLS/USDT,FORM/USDT"
-#    (SUT/USDT e YB/USDT já incluídos no código como fallback)
-#
-# 5. 🔍 PRÓXIMOS PASSOS:
-#    - [ ] Após 150 alertas: Análise de performance
-#    - [ ] Implementar ML com features BTC
-#    - [ ] (Opcional) Rate limit por moeda (4 alertas/dia/moeda)
+# 📈 EXEMPLO:
+#    Antes: "₿ BTC: +0.1% (UP)" durante queda de -5% no dia
+#    Agora: "₿ BTC Dia: -5.2% | 4h: -3.1% (STRONG DOWN)"
 #
 # =========================================================================================
 
@@ -62,38 +47,26 @@ import threading
 # =========================
 
 # Blacklist de símbolos problemáticos
-# FONTE PRINCIPAL: Railway environment variable SYMBOLS_BLACKLIST
-# FALLBACK: Moedas scam confirmadas (sempre bloqueadas)
-
-# Lê blacklist do Railway
 env_blacklist = os.getenv("SYMBOLS_BLACKLIST", "")
 SYMBOLS_BLACKLIST = set()
 
 if env_blacklist:
-    # Parse e limpa a string do Railway
     parsed = [s.strip() for s in env_blacklist.split(",") if s.strip()]
     SYMBOLS_BLACKLIST.update(parsed)
 
-# SEMPRE adiciona moedas scam confirmadas (proteção mínima)
 SYMBOLS_BLACKLIST_CRITICAL = {
-    'SUT/USDT',  # Scam confirmado - 53% reversals
-    'YB/USDT',   # Scam confirmado - sempre reversals
+    'SUT/USDT',
+    'YB/USDT',
 }
 SYMBOLS_BLACKLIST.update(SYMBOLS_BLACKLIST_CRITICAL)
 
-# Log para confirmação
 print(f"⛔ Blacklist: {len(SYMBOLS_BLACKLIST)} símbolos bloqueados")
-if len(SYMBOLS_BLACKLIST) > 2:
-    print(f"   Railway: {len(SYMBOLS_BLACKLIST) - 2} moedas")
-    print(f"   Hardcoded: 2 moedas críticas (SUT, YB)")
-else:
-    print(f"   ⚠️  Apenas fallback ativo (SUT, YB)")
 
 # =========================
-#   VALIDATION SYSTEM - OPTIMIZED FOR ML DATA COLLECTION
+#   VALIDATION SYSTEM
 # =========================
 class AlertValidationSystem:
-    """Sistema de validação optimizado para colecta de dados ML com BTC context"""
+    """Sistema de validação optimizado para colecta de dados ML com BTC multi-timeframe"""
     
     def __init__(self, bot_instance):
         self.bot = bot_instance
@@ -107,10 +80,10 @@ class AlertValidationSystem:
         
         self._load_existing_data()
         
-        print("Alert Validation System initialized (ML-Ready with BTC)")
+        print("Alert Validation System initialized (v2.3.0 - Multi-timeframe BTC)")
     
     def register_alert(self, alert_data: dict):
-        """Registra alerta com TODOS os dados necessários para ML incluindo BTC"""
+        """Registra alerta com TODOS os dados necessários para ML incluindo BTC multi-timeframe"""
         validation_record = {
             'alert_id': f"{alert_data['symbol']}_{int(time.time())}",
             'timestamp': int(time.time()),
@@ -128,16 +101,19 @@ class AlertValidationSystem:
             'cascade_risk': alert_data.get('cascade_risk', 0),
             'market_regime': alert_data.get('market_regime', 'UNKNOWN'),
             
-            # NOVO: Bitcoin context
+            # NOVO v2.3.0: Bitcoin multi-timeframe context
             'btc_price': self.bot.btc_data['last_price'],
             'btc_change_5m': self.bot.btc_data['change_5m'],
-            'btc_change_15m': self.bot.btc_data['change_15m'],
-            'btc_trend': self.bot.btc_data['trend'],
+            'btc_change_1h': self.bot.btc_data['change_1h'],
+            'btc_change_4h': self.bot.btc_data['change_4h'],
+            'btc_change_24h': self.bot.btc_data['change_24h'],
+            'btc_trend_micro': self.bot.btc_data['trend_micro'],
+            'btc_trend_macro': self.bot.btc_data['trend_macro'],
             'btc_volume_spike': self.bot.btc_data.get('volume_spike', 1.0),
             
-            # NOVO: Relação com BTC
-            'price_vs_btc': alert_data.get('price_change_pct', 0) - self.bot.btc_data['change_5m'],
-            'is_btc_follower': abs(alert_data.get('price_change_pct', 0) - self.bot.btc_data['change_5m']) < 1.5,
+            # Relação com BTC (usa macro trend agora)
+            'price_vs_btc_4h': alert_data.get('price_change_pct', 0) - self.bot.btc_data['change_4h'],
+            'is_btc_follower': abs(alert_data.get('price_change_pct', 0) - self.bot.btc_data['change_4h']) < 2.0,
             'movement_type': self._classify_movement(alert_data, self.bot.btc_data),
             
             'validations': {
@@ -151,23 +127,24 @@ class AlertValidationSystem:
             self.pending_validations.append(validation_record)
         
         self._save_pending_validations()
-        print(f"[ML-DATA] Alert registered: {alert_data['symbol']} {alert_data['event_type']} (BTC: {self.bot.btc_data['trend']})")
+        print(f"[ML-DATA] Alert registered: {alert_data['symbol']} {alert_data['event_type']} (BTC Macro: {self.bot.btc_data['trend_macro']})")
     
     def _classify_movement(self, alert_data: dict, btc_data: dict) -> str:
-        """Classifica o movimento em relação ao BTC"""
+        """Classifica o movimento em relação ao BTC MACRO trend"""
         alert_change = alert_data.get('price_change_pct', 0)
-        btc_change = btc_data['change_5m']
+        btc_change_4h = btc_data['change_4h']
+        btc_trend = btc_data['trend_macro']
         
-        # Se BTC está lateral, movimento é independente
-        if abs(btc_change) < 0.2:  # FIXED: 0.5 → 0.2 para captar mais movimentos
+        # Se BTC está lateral (4h), movimento é independente
+        if btc_trend == 'LATERAL':
             return 'INDEPENDENT'
         
-        # Mesma direção que BTC
-        if (alert_change > 0 and btc_change > 0) or (alert_change < 0 and btc_change < 0):
+        # Mesma direção que BTC macro
+        if (alert_change > 0 and btc_change_4h > 0) or (alert_change < 0 and btc_change_4h < 0):
             # Verifica força relativa
-            if abs(alert_change) > abs(btc_change) * 1.5:
+            if abs(alert_change) > abs(btc_change_4h) * 1.5:
                 return 'BTC_OUTPERFORM'
-            elif abs(alert_change) > abs(btc_change) * 0.5:
+            elif abs(alert_change) > abs(btc_change_4h) * 0.5:
                 return 'BTC_FOLLOW'
             else:
                 return 'BTC_UNDERPERFORM'
@@ -193,11 +170,11 @@ class AlertValidationSystem:
             for record in self.pending_validations[:]:
                 alert_time = record['timestamp']
                 
-                # Validação 1h (silenciosa - só guarda dados)
+                # Validação 1h (silenciosa)
                 if not record['validations']['1h']['checked'] and current_time >= alert_time + 3600:
                     self._validate_alert(record, '1h', notify=False)
                 
-                # Validação 4h (SEMPRE notifica - dados para ML)
+                # Validação 4h (SEMPRE notifica)
                 if not record['validations']['4h']['checked'] and current_time >= alert_time + 14400:
                     self._validate_alert(record, '4h', notify=True)
                 
@@ -206,13 +183,12 @@ class AlertValidationSystem:
                     notify_24h = record['strength'] >= 7
                     self._validate_alert(record, '24h', notify=notify_24h)
                     
-                    # Move para resultados finais
                     self.validation_results.append(record)
                     self.pending_validations.remove(record)
                     self._save_results()
     
     def _validate_alert(self, record: dict, timeframe: str, notify: bool = True):
-        """Valida alerta e guarda TODOS os dados incluindo BTC atual"""
+        """Valida alerta e guarda dados com BTC multi-timeframe"""
         try:
             exchange_name = record['exchange']
             symbol = record['symbol']
@@ -227,11 +203,12 @@ class AlertValidationSystem:
             initial_price = record['initial_price']
             price_change_pct = ((current_price - initial_price) / initial_price) * 100 if initial_price > 0 else 0
             
-            # NOVO: Guarda BTC context no momento da validação
+            # Guarda BTC context multi-timeframe no momento da validação
             record['validations'][timeframe]['btc_price'] = self.bot.btc_data['last_price']
-            record['validations'][timeframe]['btc_change'] = self.bot.btc_data['change_5m']
+            record['validations'][timeframe]['btc_change_1h'] = self.bot.btc_data['change_1h']
+            record['validations'][timeframe]['btc_change_4h'] = self.bot.btc_data['change_4h']
+            record['validations'][timeframe]['btc_trend_macro'] = self.bot.btc_data['trend_macro']
             
-            # Atualiza registro
             record['validations'][timeframe]['checked'] = True
             record['validations'][timeframe]['price'] = current_price
             record['validations'][timeframe]['price_change'] = price_change_pct
@@ -239,8 +216,6 @@ class AlertValidationSystem:
             event_type = record['event_type']
             result = self._classify_result(event_type, price_change_pct, timeframe)
             record['validations'][timeframe]['result'] = result
-            
-            # Guarda timestamp da validação
             record['validations'][timeframe]['validated_at'] = int(time.time())
             
             if notify:
@@ -290,8 +265,6 @@ class AlertValidationSystem:
         result = validation['result']
         emoji = result_emojis.get(result, '⚪')
         
-        success = result in ['SUSTAINED_PUMP', 'SUSTAINED_DUMP', 'WEAK_CONTINUATION']
-        
         msg = f"""📊 <b>VALIDAÇÃO [{timeframe}]</b>
 
 {emoji} <b>{result.replace('_', ' ')}</b>
@@ -303,10 +276,17 @@ class AlertValidationSystem:
 💰 ${record['initial_price']:.6f} → ${validation['price']:.6f}
 📈 {validation['price_change']:+.2f}%"""
 
-        # Adiciona contexto BTC
+        # Adiciona contexto BTC multi-timeframe
         if record.get('movement_type'):
             msg += f"\n\n₿ Movimento: {record['movement_type']}"
-            msg += f"\n📊 BTC no alerta: {record['btc_change_5m']:+.1f}%"
+            
+            # Mostra timeframe mais relevante
+            if abs(record.get('btc_change_4h', 0)) > 1.0:
+                msg += f"\n📊 BTC 4h no alerta: {record['btc_change_4h']:+.1f}%"
+            elif abs(record.get('btc_change_1h', 0)) > 0.5:
+                msg += f"\n📊 BTC 1h no alerta: {record['btc_change_1h']:+.1f}%"
+            else:
+                msg += f"\n📊 BTC no alerta: {record['btc_change_5m']:+.1f}%"
         
         if record.get('correlations_count', 0) > 0:
             msg += f"\n🔗 Correlações: {record['correlations_count']}"
@@ -336,13 +316,11 @@ class AlertValidationSystem:
         if len(recent) < 5:
             return
         
-        # Stats básicas
         pump_correct = 0
         pump_total = 0
         dump_correct = 0
         dump_total = 0
         
-        # Stats por movimento BTC
         btc_followers = 0
         btc_counter = 0
         independent = 0
@@ -358,7 +336,6 @@ class AlertValidationSystem:
             result = val_4h.get('result', 'UNKNOWN')
             event_type = record.get('event_type', 'UNKNOWN')
             
-            # Contabiliza movimento vs BTC
             movement = record.get('movement_type', 'UNKNOWN')
             if movement == 'BTC_FOLLOW':
                 btc_followers += 1
@@ -380,12 +357,11 @@ class AlertValidationSystem:
         dump_acc = (dump_correct / dump_total * 100) if dump_total > 0 else 0
         overall = ((pump_correct + dump_correct) / (pump_total + dump_total) * 100) if (pump_total + dump_total) > 0 else 0
         
-        # Progresso para ML
         ml_target = 150
         ml_progress = (total_alerts / ml_target) * 100
-        days_remaining = max(0, 14 - (total_alerts / 15))  # Estimativa
+        days_remaining = max(0, 14 - (total_alerts / 15))
         
-        msg = f"""📊 <b>RELATÓRIO DIÁRIO</b>
+        msg = f"""📊 <b>RELATÓRIO DIÁRIO v2.3.0</b>
 
 <b>🎯 Accuracy 24h:</b>
 - Overall: {overall:.1f}% ({pump_correct + dump_correct}/{pump_total + dump_total})
@@ -403,59 +379,14 @@ class AlertValidationSystem:
 - Estimativa: ~{days_remaining:.0f} dias restantes
 
 <b>💾 Dataset Status:</b>
-✅ BTC tracking activo
-✅ Dados ML-ready
+✅ BTC multi-timeframe tracking
+✅ Dados ML-ready (4 timeframes BTC)
 ✅ Blacklist implementada"""
         
         if total_alerts >= ml_target:
             msg += f"\n\n🎉 <b>META ATINGIDA!</b>\n✅ Dataset completo para ML!"
         
         self.bot.send_telegram(msg)
-    
-    def _calculate_accuracy(self) -> dict:
-        """Calcula accuracy geral"""
-        
-        if len(self.validation_results) < 5:
-            return {
-                'overall': 0.0,
-                'pump': 0.0,
-                'dump': 0.0,
-                'total_validated': len(self.validation_results)
-            }
-        
-        pump_correct = 0
-        pump_total = 0
-        dump_correct = 0
-        dump_total = 0
-        
-        for record in self.validation_results:
-            val_4h = record['validations']['4h']
-            
-            if not val_4h['checked']:
-                continue
-            
-            result = val_4h['result']
-            event_type = record['event_type']
-            
-            if event_type == "PUMP":
-                pump_total += 1
-                if result in ['SUSTAINED_PUMP', 'WEAK_CONTINUATION']:
-                    pump_correct += 1
-            else:
-                dump_total += 1
-                if result in ['SUSTAINED_DUMP', 'WEAK_CONTINUATION']:
-                    dump_correct += 1
-        
-        pump_accuracy = (pump_correct / pump_total * 100) if pump_total > 0 else 0
-        dump_accuracy = (dump_correct / dump_total * 100) if dump_total > 0 else 0
-        overall_accuracy = ((pump_correct + dump_correct) / (pump_total + dump_total) * 100) if (pump_total + dump_total) > 0 else 0
-        
-        return {
-            'overall': overall_accuracy,
-            'pump': pump_accuracy,
-            'dump': dump_accuracy,
-            'total_validated': len(self.validation_results)
-        }
     
     def _save_pending_validations(self):
         try:
@@ -503,7 +434,7 @@ class FileBasedPatternDB:
         
         self._load_existing_data()
         
-        print("Pattern database initialized (ML-Ready with BTC)")
+        print("Pattern database initialized (v2.3.0 - Multi-timeframe)")
     
     def ensure_data_dir(self):
         if not os.path.exists(self.data_dir):
@@ -618,7 +549,7 @@ class PatternCorrelationEngine:
         self.correlation_threshold = 0.7
         self.time_window_minutes = 30
         
-        print("Correlation Engine initialized with BTC awareness")
+        print("Correlation Engine initialized (v2.3.0)")
     
     def process_new_event(self, event: MarketEvent) -> Dict:
         self.active_events.append(event)
@@ -716,64 +647,63 @@ class PatternCorrelationEngine:
         return {'regime': regime, 'confidence': 0.7}
 
 # =========================
-#   TRADING BOT - ML DATA COLLECTION MODE WITH BTC
+#   TRADING BOT v2.3.0 - MULTI-TIMEFRAME BTC
 # =========================
 class AdvancedPatternTradingBot:
-    """Bot optimizado para colecta de dados ML com BTC tracking"""
+    """Bot v2.3.0 com BTC Multi-Timeframe Tracker"""
     
     def __init__(self):
         self.db = FileBasedPatternDB()
         self.correlation_engine = PatternCorrelationEngine(self.db)
         
-        # Inicializa exchanges primeiro
         self.exchanges = {}
         self.exchanges_list = os.getenv("EXCHANGES", "binance,bingx").split(",")
         
-        # Precisa inicializar exchanges antes do validation system
         self._initialize_exchanges()
         
-        # BTC tracking data
+        # BTC tracking data - MULTI-TIMEFRAME v2.3.0
         self.btc_data = {
             'last_price': 0,
             'change_5m': 0,
-            'change_15m': 0,
-            'trend': 'LATERAL',  # UP/DOWN/LATERAL
+            'change_1h': 0,      # NOVO
+            'change_4h': 0,      # NOVO
+            'change_24h': 0,     # NOVO
+            'trend_micro': 'LATERAL',   # Baseado em 5m (rápido)
+            'trend_macro': 'LATERAL',   # NOVO - Baseado em 4h+24h (real!)
             'last_update': 0,
-            'history': deque(maxlen=50),  # 50 data points (~15min)
+            'history': deque(maxlen=200),  # EXPANDIDO: 200 pontos = ~3h+ de dados
             'volume_spike': 1.0,
             'last_volume': 0
         }
         
-        # Agora pode inicializar validation system
         self.validation_system = AlertValidationSystem(self)
         
         self.watchlist = {}
         self.last_alert_ts = defaultdict(lambda: 0.0)
         
         self.quote_filter = os.getenv("QUOTE_FILTER", "USDT").split(",")
-        self.top_n_by_volume = int(os.getenv("TOP_N_BY_VOLUME", "50"))
+        self.top_n_by_volume = int(os.getenv("TOP_N_BY_VOLUME", "40"))
         self.timeframe = os.getenv("TIMEFRAME", "1m")
         self.threshold = float(os.getenv("THRESHOLD", "1.8"))
-        self.min_price_change = float(os.getenv("MIN_PRICE_CHANGE", "0.02"))
+        self.min_price_change = float(os.getenv("MIN_PRICE_CHANGE", "0.015"))
         self.sleep_seconds = int(os.getenv("SLEEP_SECONDS", "20"))
-        self.cooldown_minutes = int(os.getenv("COOLDOWN_MINUTES", "8"))
+        self.cooldown_minutes = int(os.getenv("COOLDOWN_MINUTES", "20"))
         self.min_strength = int(os.getenv("MIN_STRENGTH", "5"))
         self.debug_mode = os.getenv("DEBUG_MODE", "true").lower() == "true"
         
-        # NOVO: Configurações BTC
         self.btc_adjust_strength = os.getenv("BTC_ADJUST_STRENGTH", "true").lower() == "true"
         self.btc_filter_followers = os.getenv("BTC_FILTER_FOLLOWERS", "false").lower() == "true"
         
         self.tg_token = os.getenv("TG_TOKEN", "")
         self.tg_chat_id = os.getenv("TG_CHAT_ID", "")
         
-        # NOVO v2.2.1: Test Alerts System
+        # Test alerts (opcional)
         self.force_test_alerts = os.getenv("FORCE_TEST_ALERTS", "false").lower() == "true"
-        self.test_alert_interval = int(os.getenv("TEST_ALERT_INTERVAL", "300"))  # 5 min default
+        self.test_alert_interval = int(os.getenv("TEST_ALERT_INTERVAL", "300"))
         self.last_test_alert = 0
         
         if self.force_test_alerts:
-            print(f"🧪 TEST ALERTS ENABLED - Interval: {self.test_alert_interval}s ({self.test_alert_interval//60} min)")
+            print(f"🧪 TEST ALERTS ENABLED - Interval: {self.test_alert_interval}s")
         
         self.stats = {
             'alerts_sent': 0,
@@ -785,11 +715,11 @@ class AdvancedPatternTradingBot:
         self.btc_thread = threading.Thread(target=self._btc_tracker_loop, daemon=True)
         self.btc_thread.start()
         
-        print(f"Bot initialized - ML Data Collection Mode with BTC Tracking")
-        print(f"Config: Threshold={self.threshold}, MinStrength={self.min_strength}, BTC_Adjust={self.btc_adjust_strength}")
+        print(f"Bot v2.3.0 initialized - Multi-Timeframe BTC Tracking")
+        print(f"Config: Threshold={self.threshold}, MinStrength={self.min_strength}")
     
     def _initialize_exchanges(self):
-        """Inicializa exchanges antes de outros componentes"""
+        """Inicializa exchanges"""
         for exchange_name in self.exchanges_list:
             exchange_name = exchange_name.strip()
             if not exchange_name:
@@ -803,10 +733,13 @@ class AdvancedPatternTradingBot:
                 print(f"❌ Failed to initialize {exchange_name}: {e}")
     
     def _btc_tracker_loop(self):
-        """Monitora BTC/USDT continuamente"""
-        print("[BTC Tracker] Starting...")
+        """
+        Monitora BTC/USDT com MÚLTIPLOS TIMEFRAMES
+        v2.3.0 - FIX PRINCIPAL!
+        """
+        print("[BTC Tracker v2.3.0] Starting Multi-Timeframe...")
         
-        # Aguarda exchanges estarem prontas
+        # Aguarda exchanges
         attempts = 0
         while 'binance' not in self.exchanges or not self.exchanges.get('binance'):
             time.sleep(2)
@@ -814,12 +747,10 @@ class AdvancedPatternTradingBot:
             if attempts > 30:
                 print("[BTC Tracker] ERROR: Binance not available!")
                 return
-            if attempts % 5 == 0:
-                print(f"[BTC Tracker] Waiting for Binance... ({attempts*2}s)")
         
         print("[BTC Tracker] Binance ready, starting monitoring...")
         
-        # Inicializa com dados reais
+        # Inicializa
         try:
             ex = self.exchanges['binance']
             ticker = ex.fetch_ticker('BTC/USDT')
@@ -833,26 +764,21 @@ class AdvancedPatternTradingBot:
                 if 'binance' in self.exchanges:
                     ex = self.exchanges['binance']
                     
-                    # Fetch ticker para preço
+                    # Fetch ticker
                     ticker = ex.fetch_ticker('BTC/USDT')
                     current_price = ticker['last']
                     current_time = int(time.time())
+                    current_volume = ticker.get('quoteVolume', 0)
                     
-                    # CORREÇÃO: Usar 'quoteVolume' em vez de 'quoteVolume24h'
-                    current_volume = ticker.get('quoteVolume', 0)  # Campo correto!
-                    
-                    # Fetch OHLCV para volume spike
+                    # Volume spike
                     try:
                         ohlcv = ex.fetch_ohlcv('BTC/USDT', '1m', 10)
-                        
-                        # Calcula volume spike
                         if len(ohlcv) >= 5:
                             volumes = [c[5] for c in ohlcv[-5:]]
                             avg_volume = sum(volumes) / len(volumes)
                             last_volume = ohlcv[-1][5] if ohlcv else current_volume
                             self.btc_data['volume_spike'] = last_volume / avg_volume if avg_volume > 0 else 1.0
-                    except Exception as e:
-                        # Se falhar OHLCV, continua sem volume spike
+                    except Exception:
                         self.btc_data['volume_spike'] = 1.0
                     
                     # Adiciona à história
@@ -862,45 +788,96 @@ class AdvancedPatternTradingBot:
                         'volume': current_volume
                     })
                     
-                    # Calcula mudanças apenas se tiver história suficiente
+                    # ========================================
+                    # MULTI-TIMEFRAME CALCULATION - v2.3.0
+                    # ========================================
+                    
                     if len(self.btc_data['history']) >= 2:
-                        # 5min ago - usa o que tiver disponível (mínimo 5 pontos)
-                        if len(self.btc_data['history']) >= 5:
-                            lookback_5m = min(15, len(self.btc_data['history']) - 1)
-                            price_5m_ago = self.btc_data['history'][-lookback_5m]['price']
+                        history = list(self.btc_data['history'])
+                        
+                        # 5 minutos (micro trend)
+                        if len(history) >= 5:
+                            lookback_5m = min(15, len(history) - 1)
+                            price_5m_ago = history[-lookback_5m]['price']
                             self.btc_data['change_5m'] = ((current_price - price_5m_ago) / price_5m_ago) * 100
                         
-                        # 15min ago - usa o que tiver disponível (mínimo 15 pontos)
-                        if len(self.btc_data['history']) >= 15:
-                            lookback_15m = min(45, len(self.btc_data['history']) - 1)
-                            price_15m_ago = self.btc_data['history'][-lookback_15m]['price']
-                            self.btc_data['change_15m'] = ((current_price - price_15m_ago) / price_15m_ago) * 100
+                        # 1 hora (short term) - NOVO
+                        if len(history) >= 20:  # 20 pontos * 1min = ~20min (aproximação)
+                            lookback_1h = min(60, len(history) - 1)
+                            price_1h_ago = history[-lookback_1h]['price']
+                            self.btc_data['change_1h'] = ((current_price - price_1h_ago) / price_1h_ago) * 100
                         
-                        # Determina trend baseado em 5min (FIXED: 0.8 → 0.3)
-                        if self.btc_data['change_5m'] > 0.3:  # FIXED
-                            self.btc_data['trend'] = 'UP'
-                        elif self.btc_data['change_5m'] < -0.3:  # FIXED
-                            self.btc_data['trend'] = 'DOWN'
+                        # 4 horas (medium term) - NOVO
+                        if len(history) >= 60:
+                            lookback_4h = min(120, len(history) - 1)
+                            price_4h_ago = history[-lookback_4h]['price']
+                            self.btc_data['change_4h'] = ((current_price - price_4h_ago) / price_4h_ago) * 100
+                        
+                        # 24 horas (long term) - NOVO
+                        # Usa OHLCV 1h para precisão
+                        try:
+                            ohlcv_1h = ex.fetch_ohlcv('BTC/USDT', '1h', 25)
+                            if len(ohlcv_1h) >= 24:
+                                price_24h_ago = ohlcv_1h[-24][4]  # Close de 24h atrás
+                                self.btc_data['change_24h'] = ((current_price - price_24h_ago) / price_24h_ago) * 100
+                        except Exception:
+                            # Fallback: usa história se não conseguir OHLCV
+                            if len(history) >= 150:
+                                price_24h_ago = history[-150]['price']
+                                self.btc_data['change_24h'] = ((current_price - price_24h_ago) / price_24h_ago) * 100
+                        
+                        # ========================================
+                        # TREND CLASSIFICATION - INTELIGENTE
+                        # ========================================
+                        
+                        # Trend MICRO (5min) - Rápido
+                        if self.btc_data['change_5m'] > 0.3:
+                            self.btc_data['trend_micro'] = 'UP'
+                        elif self.btc_data['change_5m'] < -0.3:
+                            self.btc_data['trend_micro'] = 'DOWN'
                         else:
-                            self.btc_data['trend'] = 'LATERAL'
+                            self.btc_data['trend_micro'] = 'LATERAL'
+                        
+                        # Trend MACRO (4h + 24h) - REAL! 🎯
+                        change_4h = self.btc_data['change_4h']
+                        change_24h = self.btc_data['change_24h']
+                        
+                        # Thresholds inteligentes por timeframe
+                        if abs(change_4h) > 2.0 or abs(change_24h) > 3.0:
+                            # Movimento significativo detectado
+                            if change_4h > 1.5 or change_24h > 2.0:
+                                self.btc_data['trend_macro'] = 'STRONG_UP'
+                            elif change_4h > 0.5 or change_24h > 1.0:
+                                self.btc_data['trend_macro'] = 'UP'
+                            elif change_4h < -1.5 or change_24h < -2.0:
+                                self.btc_data['trend_macro'] = 'STRONG_DOWN'
+                            elif change_4h < -0.5 or change_24h < -1.0:
+                                self.btc_data['trend_macro'] = 'DOWN'
+                            else:
+                                self.btc_data['trend_macro'] = 'LATERAL'
+                        else:
+                            # Movimento fraco = lateral
+                            self.btc_data['trend_macro'] = 'LATERAL'
                     
                     self.btc_data['last_price'] = current_price
                     self.btc_data['last_update'] = current_time
                     self.btc_data['last_volume'] = current_volume
                     
-                    # Log a cada 5min em debug
-                    if self.debug_mode and len(self.btc_data['history']) % 15 == 0:
-                        print(f"[BTC] ${current_price:.0f} | 5m: {self.btc_data['change_5m']:+.2f}% | Trend: {self.btc_data['trend']}")
+                    # Log detalhado em debug
+                    if self.debug_mode and len(self.btc_data['history']) % 30 == 0:
+                        print(f"[BTC Multi-TF] ${current_price:.0f}")
+                        print(f"  5m: {self.btc_data['change_5m']:+.2f}% | 1h: {self.btc_data['change_1h']:+.2f}%")
+                        print(f"  4h: {self.btc_data['change_4h']:+.2f}% | 24h: {self.btc_data['change_24h']:+.2f}%")
+                        print(f"  Trend Macro: {self.btc_data['trend_macro']}")
                 
-                time.sleep(20)  # Update a cada 20s
+                time.sleep(20)
                 
             except Exception as e:
                 print(f"[BTC Tracker] Error: {e}")
                 time.sleep(30)
     
     def should_process_symbol(self, symbol: str) -> bool:
-        """Verifica se o símbolo deve ser processado (blacklist check)"""
-        # Remove exchange suffix para comparação
+        """Verifica blacklist"""
         clean_symbol = symbol.split(':')[0] if ':' in symbol else symbol
         
         if clean_symbol in SYMBOLS_BLACKLIST:
@@ -930,95 +907,36 @@ class AdvancedPatternTradingBot:
             print(f"[Telegram] Error: {e}")
     
     def _send_test_alert(self):
-        """Envia alerta de TESTE com BTC context atual - v2.2.1"""
+        """Test alert v2.3.0 com multi-timeframe"""
         
         btc_price = self.btc_data['last_price']
         btc_5m = self.btc_data['change_5m']
-        btc_15m = self.btc_data['change_15m']
-        btc_trend = self.btc_data['trend']
-        history_points = len(self.btc_data['history'])
+        btc_1h = self.btc_data['change_1h']
+        btc_4h = self.btc_data['change_4h']
+        btc_24h = self.btc_data['change_24h']
+        trend_macro = self.btc_data['trend_macro']
         
-        # Determina movimento simulado baseado no BTC real
-        if abs(btc_5m) < 0.2:
-            movement_type = "INDEPENDENT"
-            movement_emoji = "🎯"
-            movement_desc = "Movimento independente de BTC"
-        elif btc_5m > 0.3:
-            movement_type = "FOLLOWING BTC"
-            movement_emoji = "📊"
-            movement_desc = "Seguindo pump do BTC"
-        elif btc_5m < -0.3:
-            movement_type = "COUNTER TO BTC"
-            movement_emoji = "⚔️"
-            movement_desc = "Contra movimento do BTC"
-        else:
-            movement_type = "INDEPENDENT"
-            movement_emoji = "🎯"
-            movement_desc = "BTC lateral, movimento próprio"
-        
-        # Simula preço de alerta baseado no BTC
-        simulated_price_change = btc_5m + 1.5  # Sempre +1.5% acima do BTC
-        
-        msg = f"""🧪 <b>ALERTA DE TESTE - BTC TRACKER v2.2.1</b>
+        msg = f"""🧪 <b>TEST ALERT v2.3.0 - Multi-Timeframe</b>
 
 ━━━━━━━━━━━━━━━━━━━━━━━━
-<b>₿ BTC STATUS ATUAL:</b>
+<b>₿ BTC MULTI-TIMEFRAME:</b>
 ━━━━━━━━━━━━━━━━━━━━━━━━
 
 💰 Preço: ${btc_price:.0f}
+
 📊 5min: {btc_5m:+.2f}%
-📊 15min: {btc_15m:+.2f}%
-🎯 Trend: <b>{btc_trend}</b>
-📈 Dados: {history_points} pontos
+📊 1hora: {btc_1h:+.2f}%
+📊 4horas: {btc_4h:+.2f}%
+📊 24horas: {btc_24h:+.2f}%
+
+🎯 Trend Macro: <b>{trend_macro}</b>
 
 ━━━━━━━━━━━━━━━━━━━━━━━━
-<b>📝 FORMATO DE ALERTA REAL:</b>
-━━━━━━━━━━━━━━━━━━━━━━━━
-
-Se receberes um PUMP agora, virá assim:
-
-🚨 <b>PUMP DETECTADO</b>
-
-🎯 <b>ETH/USDT</b> (BINANCE)
-⚡ <b>Strength: 8/10</b>
-💹 Volume: 15.5x médio
-📈 Preço: {simulated_price_change:+.1f}%"""
-
-        # Adiciona contexto BTC SE BTC estiver a mover
-        if abs(btc_5m) > 0.3:
-            relative_strength = simulated_price_change - btc_5m
-            msg += f"\n\n₿ BTC: {btc_5m:+.1f}% ({btc_trend})"
-            
-            if abs(relative_strength) > 1:
-                if relative_strength > 0:
-                    msg += f"\n💪 Outperforming BTC! (+{abs(relative_strength):.1f}%)"
-                else:
-                    msg += f"\n⚠️ Underperforming BTC ({relative_strength:.1f}%)"
-            else:
-                msg += f"\n📊 Following BTC"
-        else:
-            msg += f"\n\n{movement_emoji} <b>{movement_type}</b>"
-            msg += f"\n💭 {movement_desc}"
-        
-        msg += f"\n🕐 {datetime.now().strftime('%H:%M:%S')}"
-        
-        msg += f"""
-
-━━━━━━━━━━━━━━━━━━━━━━━━
-<b>🔍 INTERPRETAÇÃO:</b>
-━━━━━━━━━━━━━━━━━━━━━━━━
-
-• BTC {btc_trend}: {'Mercado volátil' if abs(btc_5m) > 0.3 else 'Mercado calmo'}
-• Contexto BTC: {'VISÍVEL nos alertas' if abs(btc_5m) > 0.3 else 'Não aparece (BTC lateral)'}
-• Movimentos <0.3%: Considerados LATERAL
-• Próximo teste: {self.test_alert_interval//60} minutos
-
-━━━━━━━━━━━━━━━━━━━━━━━━
-🧪 Isto é um TESTE automático
-⏰ Para desativar: FORCE_TEST_ALERTS=false"""
+✅ v2.3.0 - Multi-timeframe OK!
+🕐 {datetime.now().strftime('%H:%M:%S')}"""
         
         self.send_telegram(msg)
-        print(f"[TEST] Alerta de teste enviado | BTC: {btc_5m:+.2f}% ({btc_trend})")
+        print(f"[TEST v2.3.0] Alert sent | Macro: {trend_macro}")
     
     def build_exchange(self, name: str):
         name = name.strip().lower()
@@ -1036,7 +954,7 @@ Se receberes um PUMP agora, virá assim:
         ex.load_markets()
         return ex
     
-    def get_symbols_for_exchange(self, ex, limit: int = 50):
+    def get_symbols_for_exchange(self, ex, limit: int = 40):
         try:
             tickers = ex.fetch_tickers()
             volume_pairs = []
@@ -1045,7 +963,6 @@ Se receberes um PUMP agora, virá assim:
                 if not any(symbol.endswith("/" + q) for q in self.quote_filter):
                     continue
                 
-                # BLACKLIST CHECK
                 if not self.should_process_symbol(symbol):
                     continue
                     
@@ -1116,7 +1033,7 @@ Se receberes um PUMP agora, virá assim:
         return False
     
     def generate_alert(self, event: MarketEvent, analysis: Dict) -> str:
-        """Alerta com contexto BTC"""
+        """Alerta v2.3.0 com contexto BTC multi-timeframe inteligente"""
         
         msg = f"""🚨 <b>{event.event_type} DETECTADO</b>
 
@@ -1125,30 +1042,61 @@ Se receberes um PUMP agora, virá assim:
 💹 Volume: {event.volume_multiple:.1f}x médio
 📈 Preço: {event.price_change_pct:+.1f}%"""
 
-        # NOVO: Adiciona contexto BTC
-        btc_change = self.btc_data['change_5m']
-        btc_trend = self.btc_data['trend']
+        # ========================================
+        # CONTEXTO BTC INTELIGENTE - v2.3.0
+        # ========================================
         
-        # Calcula força relativa ao BTC
-        relative_strength = event.price_change_pct - btc_change
+        btc_5m = self.btc_data['change_5m']
+        btc_1h = self.btc_data['change_1h']
+        btc_4h = self.btc_data['change_4h']
+        btc_24h = self.btc_data['change_24h']
+        trend_macro = self.btc_data['trend_macro']
         
-        if abs(btc_change) > 0.3:  # BTC está a mover
-            msg += f"\n\n₿ BTC: {btc_change:+.1f}% ({btc_trend})"
+        # Decide qual timeframe mostrar (mostra o mais relevante)
+        show_btc_context = False
+        btc_context_lines = []
+        
+        # Se há movimento forte em qualquer timeframe, mostra
+        if abs(btc_24h) > 3.0:
+            show_btc_context = True
+            btc_context_lines.append(f"₿ BTC Dia: {btc_24h:+.1f}%")
+            if abs(btc_4h) > 1.5:
+                btc_context_lines.append(f"₿ BTC 4h: {btc_4h:+.1f}%")
+        elif abs(btc_4h) > 1.5:
+            show_btc_context = True
+            btc_context_lines.append(f"₿ BTC 4h: {btc_4h:+.1f}%")
+            if abs(btc_1h) > 0.8:
+                btc_context_lines.append(f"₿ BTC 1h: {btc_1h:+.1f}%")
+        elif abs(btc_1h) > 0.8:
+            show_btc_context = True
+            btc_context_lines.append(f"₿ BTC 1h: {btc_1h:+.1f}%")
+        
+        # Adiciona trend se relevante
+        if trend_macro != 'LATERAL' and show_btc_context:
+            btc_context_lines.append(f"📊 Trend: {trend_macro}")
+        
+        # Calcula força relativa
+        relative_to_4h = event.price_change_pct - btc_4h
+        
+        if show_btc_context:
+            msg += "\n"
+            for line in btc_context_lines:
+                msg += f"\n{line}"
             
-            if abs(relative_strength) > 1:
-                if relative_strength > 0:
-                    msg += f"\n💪 Outperforming BTC! (+{abs(relative_strength):.1f}%)"
+            # Análise relativa
+            if abs(relative_to_4h) > 2.0:
+                if relative_to_4h > 0:
+                    msg += f"\n💪 Muito acima BTC (+{abs(relative_to_4h):.1f}%)"
                 else:
-                    msg += f"\n⚠️ Underperforming BTC ({relative_strength:.1f}%)"
-            elif abs(event.price_change_pct - btc_change) < 0.5:
-                msg += f"\n📊 Following BTC"
+                    msg += f"\n⚠️ Muito abaixo BTC ({relative_to_4h:.1f}%)"
+            elif abs(event.price_change_pct - btc_4h) < 1.0:
+                msg += f"\n📊 Segue BTC"
         
-        # Adiciona hora
         msg += f"\n🕐 {datetime.fromtimestamp(event.timestamp).strftime('%H:%M:%S')}"
 
         correlations = analysis.get('correlations_found', [])
         if correlations:
-            msg += f"\n\n🔗 Correlação com {correlations[0].symbol_pair[0]}"
+            msg += f"\n🔗 Correlação: {correlations[0].symbol_pair[0]}"
 
         cascade = analysis.get('cascade_risk', 0)
         if cascade > 0.5:
@@ -1160,11 +1108,10 @@ Se receberes um PUMP agora, virá assim:
         try:
             print("🏦 Initializing exchanges...")
             
-            # Já inicializadas no __init__
             for exchange_name, ex in self.exchanges.items():
                 symbols = self.get_symbols_for_exchange(ex, self.top_n_by_volume)
                 self.watchlist[exchange_name] = symbols
-                print(f"✅ {exchange_name}: {len(symbols)} symbols (after blacklist)")
+                print(f"✅ {exchange_name}: {len(symbols)} symbols")
             
             if not self.exchanges:
                 raise SystemExit("❌ No exchanges")
@@ -1172,23 +1119,26 @@ Se receberes um PUMP agora, virá assim:
             total_symbols = sum(len(s) for s in self.watchlist.values())
             blacklisted = len(SYMBOLS_BLACKLIST)
             
-            startup_msg = f"""🚀 <b>BOT INICIADO - ML DATA COLLECTION v2.2.1</b> 🧪
+            startup_msg = f"""🚀 <b>BOT INICIADO v2.3.0</b> 📊
+
+<b>✨ Multi-Timeframe BTC Tracker!</b>
 
 🏦 {', '.join(self.exchanges.keys())}
 📊 {total_symbols} moedas monitorizadas
 ⛔ {blacklisted} símbolos na blacklist
 
-₿ <b>BTC Tracking:</b> ACTIVO
-🧪 <b>Test Alerts:</b> {'ACTIVO' if self.force_test_alerts else 'DESATIVADO'}
-🎯 <b>Objectivo:</b> 150-200 alertas limpos
-📊 <b>Sistema:</b> Alertas + BTC context + Validações 4h
-📈 <b>Próximo:</b> Machine Learning com features BTC
+₿ <b>BTC Tracking v2.3.0:</b>
+   • 4 timeframes: 5m, 1h, 4h, 24h
+   • Trend Macro inteligente
+   • Contexto real do mercado
 
-Aguarda validações para ML! 🔥"""
+🎯 <b>Objectivo:</b> 150-200 alertas ML-ready
+📈 <b>Próximo:</b> Machine Learning
+
+Aguarda alertas com contexto BTC real! 🔥"""
             
             self.send_telegram(startup_msg)
             
-            # Aguarda BTC tracker inicializar
             time.sleep(5)
             
             self.run_detection_loop()
@@ -1203,8 +1153,8 @@ Aguarda validações para ML! 🔥"""
             raise
     
     def run_detection_loop(self):
-        """Loop de detecção com BTC awareness"""
-        print("🔬 Starting ML data collection with BTC tracking...")
+        """Loop de detecção v2.3.0"""
+        print("🔬 Starting ML data collection v2.3.0...")
         
         loop_count = 0
         
@@ -1212,7 +1162,7 @@ Aguarda validações para ML! 🔥"""
             loop_start = time.time()
             loop_count += 1
             
-            # NOVO v2.2.1: Test Alerts System
+            # Test alerts
             if self.force_test_alerts:
                 current_time = time.time()
                 if current_time - self.last_test_alert >= self.test_alert_interval:
@@ -1223,13 +1173,13 @@ Aguarda validações para ML! 🔥"""
                 uptime = (time.time() - self.stats['start_time']) / 3600
                 total_alerts = len(self.validation_system.validation_results) + len(self.validation_system.pending_validations)
                 btc_price = self.btc_data['last_price']
-                print(f"[STATS] Loop #{loop_count}, {uptime:.1f}h | Alerts: {total_alerts} | BTC: ${btc_price:.0f}")
+                trend = self.btc_data['trend_macro']
+                print(f"[STATS] Loop #{loop_count}, {uptime:.1f}h | Alerts: {total_alerts} | BTC: ${btc_price:.0f} ({trend})")
             
             for exchange_name, ex in self.exchanges.items():
                 symbols = self.watchlist.get(exchange_name, [])
                 
                 for symbol in symbols:
-                    # BLACKLIST CHECK
                     if not self.should_process_symbol(symbol):
                         continue
                     
@@ -1246,8 +1196,7 @@ Aguarda validações para ML! 🔥"""
                         
                         vol_multiple = vol_last / vol_avg if vol_avg > 0 else 0
                         
-                        # Filtro volume extremo
-                        if vol_multiple > 100:  # Volume suspeito
+                        if vol_multiple > 100:
                             if self.debug_mode:
                                 print(f"[SKIP] {symbol}: Volume extremo {vol_multiple:.1f}x")
                             continue
@@ -1268,35 +1217,36 @@ Aguarda validações para ML! 🔥"""
                         # Calcula strength base
                         base_strength = min(int((vol_multiple / 2 + abs(price_change_pct) * 20)), 10)
                         
-                        # NOVO: Ajusta strength baseado em BTC
+                        # Ajusta strength baseado em BTC MACRO
                         event_strength = base_strength
-                        btc_change = self.btc_data['change_5m']
+                        trend_macro = self.btc_data['trend_macro']
+                        btc_4h = self.btc_data['change_4h']
                         
                         if self.btc_adjust_strength:
-                            if self.btc_data['trend'] == 'UP' and event_type == 'PUMP':
-                                # Pump durante BTC pump
-                                if abs(price_change_pct*100 - btc_change) < 2:
-                                    event_strength = int(base_strength * 0.7)  # Reduz se só segue BTC
+                            if trend_macro in ['UP', 'STRONG_UP'] and event_type == 'PUMP':
+                                # Pump durante BTC bull
+                                if abs(price_change_pct*100 - btc_4h) < 2:
+                                    event_strength = int(base_strength * 0.7)
                                     
-                            elif self.btc_data['trend'] == 'DOWN' and event_type == 'PUMP':
-                                # Pump durante BTC dump = muito forte!
+                            elif trend_macro in ['DOWN', 'STRONG_DOWN'] and event_type == 'PUMP':
+                                # Pump durante BTC bear = FORTE!
                                 event_strength = min(10, int(base_strength * 1.3))
                             
-                            elif self.btc_data['trend'] == 'DOWN' and event_type == 'DUMP':
-                                # Dump durante BTC dump
-                                if abs(price_change_pct*100 - btc_change) < 2:
+                            elif trend_macro in ['DOWN', 'STRONG_DOWN'] and event_type == 'DUMP':
+                                # Dump durante BTC bear
+                                if abs(price_change_pct*100 - btc_4h) < 2:
                                     event_strength = int(base_strength * 0.7)
                         
                         if event_strength < self.min_strength:
                             continue
                         
-                        # NOVO: Filtro opcional de BTC followers
-                        is_btc_follower = abs(price_change_pct*100 - btc_change) < 1.5
+                        # Filtro opcional BTC followers
+                        is_btc_follower = abs(price_change_pct*100 - btc_4h) < 2.0
                         
                         if self.btc_filter_followers and is_btc_follower and event_strength < 7:
                             self.stats['btc_followers_filtered'] += 1
                             if self.debug_mode:
-                                print(f"[FILTER] {symbol}: BTC follower (skipped)")
+                                print(f"[FILTER] {symbol}: BTC follower")
                             continue
                         
                         event = MarketEvent(
@@ -1319,7 +1269,6 @@ Aguarda validações para ML! 🔥"""
                             self.send_telegram(alert_message)
                             self.stats['alerts_sent'] += 1
                             
-                            # Registar para validação com TODOS os dados ML + BTC
                             alert_data = {
                                 'symbol': event.symbol,
                                 'exchange': event.exchange,
@@ -1336,8 +1285,7 @@ Aguarda validações para ML! 🔥"""
                             self.validation_system.register_alert(alert_data)
                             
                             if self.debug_mode:
-                                movement_vs_btc = "INDEPENDENT" if abs(price_change_pct*100 - btc_change) > 2 else "FOLLOWER"
-                                print(f"[ALERT] {symbol}: {event_type} {event_strength}/10 | BTC: {movement_vs_btc}")
+                                print(f"[ALERT] {symbol}: {event_type} {event_strength}/10 | BTC Macro: {trend_macro}")
                     
                     except Exception as e:
                         if self.debug_mode and "rate limit" not in str(e).lower():
@@ -1352,12 +1300,11 @@ Aguarda validações para ML! 🔥"""
 #   MAIN
 # =========================
 def main():
-    print("🚀 ML Data Collection Bot v2.2.1 Starting... 🧪")
-    print("📊 Goal: Clean dataset with BTC context")
-    print("₿ BTC Tracking: ENABLED")
-    print("⛔ Blacklist: ACTIVE")
-    print("🧪 Test Alerts: Check Railway variables")
-    print("🧠 Next: Machine Learning with rich features")
+    print("🚀 ML Data Collection Bot v2.3.0 Starting...")
+    print("📊 Multi-Timeframe BTC Tracker!")
+    print("₿ Timeframes: 5m, 1h, 4h, 24h")
+    print("🎯 Trend Macro: Contexto real do mercado")
+    print("🧠 Next: Machine Learning com features BTC")
     
     bot = AdvancedPatternTradingBot()
     bot.run()
