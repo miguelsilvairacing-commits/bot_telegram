@@ -1197,14 +1197,31 @@ class AdvancedPatternTradingBot:
                             if self._validate_btc_change(change_1h, '1h'):
                                 self.btc_data['change_1h'] = change_1h
                         
-                        # 4h via OHLCV (mais preciso que história em memória)
+                        # 4h via OHLCV
+                        # BUG FIX: usar limit=7 e timestamp para garantir candle correcto
+                        # Com limit=5 e [-4], apanhava candle com preço de anos atrás
+                        # porque o último candle pode estar em formação (open != close)
                         try:
-                            ohlcv_1h = ex.fetch_ohlcv('BTC/USDT', '1h', 5)
-                            if len(ohlcv_1h) >= 4:
-                                price_4h = ohlcv_1h[-4][4]
-                                change_4h = ((current_price - price_4h) / price_4h) * 100
-                                if self._validate_btc_change(change_4h, '4h'):
-                                    self.btc_data['change_4h'] = change_4h
+                            ohlcv_1h = ex.fetch_ohlcv('BTC/USDT', '1h', 7)
+                            if len(ohlcv_1h) >= 6:
+                                # Ignorar o último candle (em formação) e apanhar o de 4h atrás
+                                # ohlcv_1h[-1] = candle actual (em formação, preço pode ser open)
+                                # ohlcv_1h[-2] = candle fechado mais recente (1h atrás)
+                                # ohlcv_1h[-5] = candle fechado de 4h atrás
+                                candle_4h_ago = ohlcv_1h[-5]
+                                price_4h = candle_4h_ago[4]  # close price
+                                ts_4h = candle_4h_ago[0] / 1000  # timestamp em segundos
+                                
+                                # Verificar que o timestamp faz sentido (~4h atrás ± 30min)
+                                expected_ts = current_time - 4 * 3600
+                                ts_diff_minutes = abs(ts_4h - expected_ts) / 60
+                                
+                                if ts_diff_minutes < 90:  # tolerância de 90 minutos
+                                    change_4h = ((current_price - price_4h) / price_4h) * 100
+                                    if self._validate_btc_change(change_4h, '4h'):
+                                        self.btc_data['change_4h'] = change_4h
+                                else:
+                                    print(f"[BTC 4h] Timestamp inesperado: diff={ts_diff_minutes:.0f}min, a ignorar")
                         except Exception:
                             pass
                         
