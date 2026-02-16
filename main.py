@@ -1,5 +1,5 @@
 # =========================================================================================
-#   CRYPTO ML BOT v3.0 - BINANCE ONLY / QUALIDADE SOBRE QUANTIDADE
+#   CRYPTO ML BOT v3.1 - BINANCE ONLY / QUALIDADE SOBRE QUANTIDADE
 # =========================================================================================
 #
 # MUDANÇAS v3.0 vs v2.3.1:
@@ -91,6 +91,8 @@ import threading
 MAX_ALERTS_PER_SYMBOL_PER_DAY = int(os.getenv("MAX_ALERTS_PER_DAY", "2"))
 MIN_ALERTS_FOR_DYNAMIC_COOLDOWN = 5  # alertas validados mínimos para activar
 
+BOT_VERSION = "3.1"
+
 env_blacklist = os.getenv("SYMBOLS_BLACKLIST", "")
 SYMBOLS_BLACKLIST = set()
 
@@ -140,7 +142,7 @@ class SymbolReputationSystem:
         self.today_alerts = defaultdict(list)
         
         self._load()
-        print("Symbol Reputation System initialized (v3.0)")
+        print("Symbol Reputation System initialized (v3.1)")
     
     def _load(self):
         try:
@@ -348,7 +350,7 @@ class AlertValidationSystem:
         
         self._load_existing_data()
         
-        print("Alert Validation System initialized (v3.0 - Honest Accuracy)")
+        print("Alert Validation System initialized (v3.1 - Honest Accuracy)")
     
     def register_alert(self, alert_data: dict):
         """Registra alerta com todos os dados para ML"""
@@ -625,7 +627,7 @@ class AlertValidationSystem:
         
         total_dataset = len(self.validation_results)
         
-        msg = f"""📊 <b>RELATÓRIO DIÁRIO v3.0</b>
+        msg = f"""📊 <b>RELATÓRIO DIÁRIO v3.1</b>
 
 <b>🎯 Accuracy REAL (só SUSTAINED) 4h:</b>
 ✅ Acertos: {acertos}/{total} = {acc_real:.1f}%
@@ -694,7 +696,7 @@ class FileBasedPatternDB:
         
         self._load_existing_data()
         
-        print("Pattern database initialized (v3.0)")
+        print("Pattern database initialized (v3.1)")
     
     def ensure_data_dir(self):
         if not os.path.exists(self.data_dir):
@@ -1003,7 +1005,7 @@ class AdvancedPatternTradingBot:
         self.btc_snapshot_thread = threading.Thread(target=self._btc_snapshot_loop, daemon=True)
         self.btc_snapshot_thread.start()
         
-        print(f"Bot v3.0 initialized — Binance Only, Quality First")
+        print(f"Bot v3.1 initialized — Binance Only, Quality First")
     
     def _initialize_binance(self):
         """Inicializa apenas Binance"""
@@ -1197,33 +1199,54 @@ class AdvancedPatternTradingBot:
                             if self._validate_btc_change(change_1h, '1h'):
                                 self.btc_data['change_1h'] = change_1h
                         
-                        # 4h via OHLCV
-                        # BUG FIX: usar limit=7 e timestamp para garantir candle correcto
-                        # Com limit=5 e [-4], apanhava candle com preço de anos atrás
-                        # porque o último candle pode estar em formação (open != close)
+                        # 4h via OHLCV com detecção automática de formato de timestamp
+                        # O CCXT pode devolver timestamps em ms OU segundos dependendo da versão.
+                        # Detectamos automaticamente: se candle[0] > 1e11 → ms, senão → segundos.
                         try:
                             ohlcv_1h = ex.fetch_ohlcv('BTC/USDT', '1h', 7)
-                            if len(ohlcv_1h) >= 6:
-                                # Ignorar o último candle (em formação) e apanhar o de 4h atrás
-                                # ohlcv_1h[-1] = candle actual (em formação, preço pode ser open)
-                                # ohlcv_1h[-2] = candle fechado mais recente (1h atrás)
-                                # ohlcv_1h[-5] = candle fechado de 4h atrás
-                                candle_4h_ago = ohlcv_1h[-5]
-                                price_4h = candle_4h_ago[4]  # close price
-                                ts_4h = candle_4h_ago[0] / 1000  # timestamp em segundos
+                            if len(ohlcv_1h) >= 5:
+                                candle_4h = ohlcv_1h[-4]
+                                price_4h  = float(candle_4h[4])
+                                raw_ts    = candle_4h[0]
                                 
-                                # Verificar que o timestamp faz sentido (~4h atrás ± 30min)
-                                expected_ts = current_time - 4 * 3600
-                                ts_diff_minutes = abs(ts_4h - expected_ts) / 60
+                                # Detectar formato: ms (>1e11) ou segundos (<1e11)
+                                # CCXT pode devolver ms ou s dependendo da versão instalada
+                                if raw_ts > 1e11:
+                                    ts_s = raw_ts / 1000
+                                    ts_fmt = "ms"
+                                else:
+                                    ts_s = raw_ts
+                                    ts_fmt = "s"
                                 
-                                if ts_diff_minutes < 90:  # tolerância de 90 minutos
+                                diff_min = abs(ts_s - (current_time - 3.5 * 3600)) / 60
+                                
+                                # Log de diagnóstico (só nas primeiras 10 iterações do BTC tracker)
+                                if not hasattr(self, '_btc_4h_log_count'):
+                                    self._btc_4h_log_count = 0
+                                if self._btc_4h_log_count < 3:
+                                    self._btc_4h_log_count += 1
+                                    print(f"[BTC 4h DEBUG] raw_ts={raw_ts} fmt={ts_fmt} ts_s={ts_s:.0f} diff={diff_min:.0f}min price=${price_4h:.0f}")
+                                
+                                if diff_min < 120:
                                     change_4h = ((current_price - price_4h) / price_4h) * 100
                                     if self._validate_btc_change(change_4h, '4h'):
                                         self.btc_data['change_4h'] = change_4h
+                                        if self._btc_4h_log_count <= 3:
+                                            print(f"[BTC 4h] OK: change_4h={change_4h:+.2f}% via OHLCV ({ts_fmt})")
                                 else:
-                                    print(f"[BTC 4h] Timestamp inesperado: diff={ts_diff_minutes:.0f}min, a ignorar")
-                        except Exception:
-                            pass
+                                    # Fallback: história em memória (4h = 720 ticks x 20s)
+                                    history = list(self.btc_data['history'])
+                                    lookback = min(720, len(history) - 1)
+                                    if lookback >= 120:
+                                        price_mem = history[-lookback]['price']
+                                        change_mem = ((current_price - price_mem) / price_mem) * 100
+                                        if self._validate_btc_change(change_mem, '4h'):
+                                            self.btc_data['change_4h'] = change_mem
+                                            if self._btc_4h_log_count <= 3:
+                                                print(f"[BTC 4h] Fallback memória: change_4h={change_mem:+.2f}% (diff OHLCV={diff_min:.0f}min)")
+                        except Exception as e:
+                            if self.debug_mode:
+                                print(f"[BTC 4h] Erro: {e}")
                         
                         # 24h via ticker percentage
                         try:
@@ -1559,7 +1582,7 @@ class AdvancedPatternTradingBot:
             total_symbols = sum(len(s) for s in self.watchlist.values())
             blacklisted = len(SYMBOLS_BLACKLIST)
             
-            startup_msg = f"""🚀 <b>BOT v3.0 — BINANCE ONLY</b>
+            startup_msg = f"""🚀 <b>BOT v3.1 — BINANCE ONLY</b>
 
 <b>Qualidade sobre Quantidade</b>
 
@@ -1593,8 +1616,8 @@ class AdvancedPatternTradingBot:
             raise
     
     def run_detection_loop(self):
-        """Loop de detecção v3.0 com filtros RSI e pre-trend"""
-        print("🔬 Starting detection v3.0...")
+        """Loop de detecção v3.1 com filtros RSI e pre-trend"""
+        print("🔬 Starting detection v3.1...")
         
         loop_count = 0
         
@@ -1798,7 +1821,7 @@ class AdvancedPatternTradingBot:
         filt_trend = self.stats['alerts_filtered_pretrend']
         sent = self.stats['alerts_sent']
         
-        msg = f"""🧪 <b>TEST v3.0 — Binance Only</b>
+        msg = f"""🧪 <b>TEST v3.1 — Binance Only</b>
 
 ₿ ${btc_price:.0f}
 4h: {btc_4h:+.2f}% | 24h: {btc_24h:+.2f}%
@@ -1819,7 +1842,7 @@ Valid: {'✅' if data_valid else '⏳ Warming up...'}
 #   MAIN
 # =========================
 def main():
-    print("🚀 Bot v3.0 Starting — Binance Only, Quality First")
+    print("🚀 Bot v3.1 Starting — Binance Only, Quality First")
     print("🔧 Filtros: price>=3%, RSI, pre-trend, strength>=7")
     print("📊 Accuracy honesta: só SUSTAINED conta como acerto")
     
