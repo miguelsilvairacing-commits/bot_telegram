@@ -1,5 +1,5 @@
 # =========================================================================================
-#   CRYPTO ML BOT v3.3 - BINANCE ONLY / QUALIDADE SOBRE QUANTIDADE
+#   CRYPTO ML BOT v3.4 - BINANCE ONLY / QUALIDADE SOBRE QUANTIDADE
 # =========================================================================================
 #
 # MUDANÇAS v3.0 vs v2.3.1:
@@ -91,7 +91,7 @@ import threading
 MAX_ALERTS_PER_SYMBOL_PER_DAY = int(os.getenv("MAX_ALERTS_PER_DAY", "2"))
 MIN_ALERTS_FOR_DYNAMIC_COOLDOWN = 5  # alertas validados mínimos para activar
 
-BOT_VERSION = "3.3"
+BOT_VERSION = "3.4"
 
 env_blacklist = os.getenv("SYMBOLS_BLACKLIST", "")
 SYMBOLS_BLACKLIST = set()
@@ -627,7 +627,7 @@ class AlertValidationSystem:
         
         total_dataset = len(self.validation_results)
         
-        msg = f"""📊 <b>RELATÓRIO DIÁRIO v3.3</b>
+        msg = f"""📊 <b>RELATÓRIO DIÁRIO v3.4</b>
 
 <b>🎯 Accuracy REAL (só SUSTAINED) 4h:</b>
 ✅ Acertos: {acertos}/{total} = {acc_real:.1f}%
@@ -1005,7 +1005,7 @@ class AdvancedPatternTradingBot:
         self.btc_snapshot_thread = threading.Thread(target=self._btc_snapshot_loop, daemon=True)
         self.btc_snapshot_thread.start()
         
-        print(f"Bot v3.3 initialized — Binance Only, Quality First")
+        print(f"Bot v3.4 initialized — Binance Only, Quality First")
     
     def _initialize_binance(self):
         """Inicializa apenas Binance"""
@@ -1387,22 +1387,18 @@ class AdvancedPatternTradingBot:
     
     def calculate_strength_v3(self, vol_multiple: float, price_change_pct: float) -> int:
         """
-        v3.0: Nova fórmula de Strength — sem saturação artificial
+        v3.4: Fórmula de Strength ajustada para MIN_PRICE_CHANGE=1.5%
         
-        PROBLEMA da fórmula antiga:
-        min(vol/2 + price*20, 10) saturava facilmente.
-        Vol 5x + price 1.5% = score 5.0 → S10 (porque price*20 = 30, total = 32.5, capped a 10)
-        Resultado: 66% dos S10 tinham volume abaixo de 10x. A métrica era inútil.
+        Thresholds de price_score ajustados para compatibilidade com MIN_PRICE_CHANGE=1.5%.
+        Agora movimentos de 1.5%+ com volume alto podem atingir S7.
         
-        NOVA FÓRMULA:
-        - vol_score: escala logarítmica suave até 5 pts
-          - 2x = 1pt, 5x = 2pt, 10x = 3pt, 20x = 4pt, 50x+ = 5pt
-        - price_score: escala linear até 5 pts
-          - 3% = 1pt, 5% = 2pt, 8% = 3pt, 12% = 4pt, 20%+ = 5pt
-        - Total máximo: 10
+        ESCALA v3.4:
+        - vol_score: 1.8x=1pt, 5x=2pt, 10x=3pt, 20x=4pt, 50x+=5pt
+        - price_score: 1.5%=1pt, 2.5%=2pt, 4%=3pt, 6%=4pt, 10%+=5pt
         
-        Para atingir S10: precisa vol 50x+ E price 20%+ (movimento REALMENTE excepcional)
-        Para atingir S7: vol 10x + price 8% (sinal forte mas realista)
+        Exemplos dos logs reais:
+        - ESP vol=22.9x price=3.02% → S4+S3 = S7 ✅
+        - SNX vol=35.1x price=1.94% → S4+S1 = S5
         """
         # Volume score (0-5)
         if vol_multiple >= 50:
@@ -1413,22 +1409,22 @@ class AdvancedPatternTradingBot:
             vol_score = 3
         elif vol_multiple >= 5:
             vol_score = 2
-        elif vol_multiple >= 2:
+        elif vol_multiple >= 1.8:
             vol_score = 1
         else:
             vol_score = 0
         
-        # Price score (0-5) — usa valor absoluto
+        # Price score (0-5) — thresholds ajustados v3.4
         abs_price = abs(price_change_pct)
-        if abs_price >= 20:
+        if abs_price >= 8:
             price_score = 5
-        elif abs_price >= 12:
-            price_score = 4
-        elif abs_price >= 8:
-            price_score = 3
         elif abs_price >= 5:
-            price_score = 2
+            price_score = 4
         elif abs_price >= 3:
+            price_score = 3
+        elif abs_price >= 2:
+            price_score = 2
+        elif abs_price >= 1.5:
             price_score = 1
         else:
             price_score = 0
@@ -1601,7 +1597,7 @@ class AdvancedPatternTradingBot:
     
     def run_detection_loop(self):
         """Loop de detecção v3.1 com filtros RSI e pre-trend"""
-        print("🔬 Starting detection v3.3...")
+        print("🔬 Starting detection v3.4...")
         
         loop_count = 0
         
@@ -1811,7 +1807,7 @@ class AdvancedPatternTradingBot:
         filt_trend = self.stats['alerts_filtered_pretrend']
         sent = self.stats['alerts_sent']
         
-        msg = f"""🧪 <b>TEST v3.3 — Binance Only</b>
+        msg = f"""🧪 <b>TEST v3.4 — Binance Only</b>
 
 ₿ ${btc_price:.0f}
 4h: {btc_4h:+.2f}% | 24h: {btc_24h:+.2f}%
@@ -1832,7 +1828,7 @@ Valid: {'✅' if data_valid else '⏳ Warming up...'}
 #   MAIN
 # =========================
 def main():
-    print("🚀 Bot v3.3 Starting — Binance Only, Quality First")
+    print("🚀 Bot v3.4 Starting — Binance Only, Quality First")
     print("🔧 Filtros: price>=3%, RSI, pre-trend, strength>=7")
     print("📊 Accuracy honesta: só SUSTAINED conta como acerto")
     
