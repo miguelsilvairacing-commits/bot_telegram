@@ -1,5 +1,24 @@
 # =========================================================================================
-#   CRYPTO ML BOT v3.4 - BINANCE ONLY / QUALIDADE SOBRE QUANTIDADE
+#   CRYPTO ML BOT v3.5 - COOLDOWN DINÂMICO APERFEIÇOADO
+# =========================================================================================
+#
+# MUDANÇAS v3.5 (vs v3.4):
+#
+# COOLDOWN DINÂMICO BASEADO EM ACCURACY:
+# - acc < 15%  → cooldown 4h  (símbolos problemáticos como ESP 14%)
+# - acc 15-30% → cooldown 2h  (símbolos médios)
+# - acc >= 30% → cooldown 30min (símbolos bons)
+#
+# PROBLEMA RESOLVIDO:
+# ESP/USDT tinha 8 alertas em 19 total (42%) com cooldown fixo de 30min.
+# Com accuracy de 14%, agora terá cooldown de 4h → máx 6 alertas/dia → ~1 real.
+#
+# RESULTADO ESPERADO:
+# - Redução de alertas consecutivos do mesmo símbolo
+# - Símbolos com boa accuracy mantêm alta frequência
+# - Símbolos problemáticos são automaticamente penalizados
+# - Sistema auto-regulado: accuracy melhora → cooldown reduz
+#
 # =========================================================================================
 #
 # MUDANÇAS v3.0 vs v2.3.1:
@@ -216,26 +235,28 @@ class SymbolReputationSystem:
         """
         Retorna o cooldown em minutos para este símbolo.
         
-        Tabela de cooldown baseada em accuracy real (SUSTAINED):
+        Tabela de cooldown baseada em accuracy real (SUSTAINED) — v3.5:
         - Sem dados suficientes  → 30min (base)
-        - acc < 10%              → 1440min (24h) — ruído estrutural
-        - acc < 20%              → 240min (4h)  — símbolo fraco
-        - acc 20-30%             → 30min         — base v3.0
-        - acc >= 30%             → 15min          — símbolo bom
+        - acc < 15%              → 240min (4h)  — símbolo problemático (ESP, OM)
+        - acc 15-30%             → 120min (2h)  — símbolo médio
+        - acc >= 30%             → 30min         — símbolo bom
+        
+        MUDANÇAS v3.5:
+        - Threshold 4h baixou de <20% para <15% (apanhar ESP com 14% acc)
+        - Nova camada 2h para 15-30% (antes era 30min direto)
+        - Threshold 24h removido (demasiado extremo)
         """
         acc, n = self.get_symbol_accuracy(symbol)
         
         if acc is None:
             return 30  # Default enquanto acumula dados
         
-        if acc < 10:
-            return 1440  # 24h
-        elif acc < 20:
-            return 240   # 4h
-        elif acc >= 30:
-            return 15    # 15min — recompensar bom símbolo
+        if acc < 15:
+            return 240   # 4h — símbolos problemáticos
+        elif acc < 30:
+            return 120   # 2h — símbolos médios
         else:
-            return 30    # 30min — base
+            return 30    # 30min — símbolos bons
     
     def is_volume_exceptional(self, symbol: str, current_vol: float) -> bool:
         """
@@ -966,16 +987,17 @@ class AdvancedPatternTradingBot:
         self.timeframe = os.getenv("TIMEFRAME", "1m")
         
         # v3.0: thresholds elevados baseados em análise de 3 meses
-        # MIN_PRICE_CHANGE: 1.5% → 3.0%
-        # 81% dos alertas antigos tinham 1-2% (puro ruído, revertiam quase sempre)
+        # MIN_PRICE_CHANGE: v3.4 ajustado para 1.5% (era 3%)
+        # Após análise: 3% era demasiado restritivo, 1.5% encontra mais movimentos reais
         self.threshold = float(os.getenv("THRESHOLD", "1.8"))
-        self.min_price_change = float(os.getenv("MIN_PRICE_CHANGE", "0.03"))  # 3%
+        self.min_price_change = float(os.getenv("MIN_PRICE_CHANGE", "0.015"))  # 1.5%
         
         self.sleep_seconds = int(os.getenv("SLEEP_SECONDS", "20"))
         self.cooldown_minutes = int(os.getenv("COOLDOWN_MINUTES", "30"))  # era 20min
         
-        # v3.0: MIN_STRENGTH elevado para 7 (com nova fórmula, S7 = sinal real)
-        self.min_strength = int(os.getenv("MIN_STRENGTH", "7"))
+        # v3.5: MIN_STRENGTH ajustado para 5 (era 7 em v3.0-3.4)
+        # S7 era demasiado restritivo (accuracy 0%), S5 encontra equilíbrio
+        self.min_strength = int(os.getenv("MIN_STRENGTH", "5"))
         self.debug_mode = os.getenv("DEBUG_MODE", "true").lower() == "true"
         
         self.btc_adjust_strength = os.getenv("BTC_ADJUST_STRENGTH", "true").lower() == "true"
@@ -1005,7 +1027,7 @@ class AdvancedPatternTradingBot:
         self.btc_snapshot_thread = threading.Thread(target=self._btc_snapshot_loop, daemon=True)
         self.btc_snapshot_thread.start()
         
-        print(f"Bot v3.4 initialized — Binance Only, Quality First")
+        print(f"Bot v3.5 initialized — Dynamic Cooldown by Accuracy")
     
     def _initialize_binance(self):
         """Inicializa apenas Binance"""
@@ -1597,7 +1619,7 @@ class AdvancedPatternTradingBot:
     
     def run_detection_loop(self):
         """Loop de detecção v3.1 com filtros RSI e pre-trend"""
-        print("🔬 Starting detection v3.4...")
+        print("🔬 Starting detection v3.5...")
         
         loop_count = 0
         
@@ -1828,9 +1850,10 @@ Valid: {'✅' if data_valid else '⏳ Warming up...'}
 #   MAIN
 # =========================
 def main():
-    print("🚀 Bot v3.4 Starting — Binance Only, Quality First")
-    print("🔧 Filtros: price>=3%, RSI, pre-trend, strength>=7")
-    print("📊 Accuracy honesta: só SUSTAINED conta como acerto")
+    print("🚀 Bot v3.5 Starting — Dynamic Cooldown System")
+    print("🔧 Filtros: price>=1.5%, RSI, pre-trend, strength>=5")
+    print("📊 Cooldown: acc<15%→4h, acc15-30%→2h, acc≥30%→30min")
+    print("📈 Accuracy honesta: só SUSTAINED conta como acerto")
     
     bot = AdvancedPatternTradingBot()
     bot.run()
